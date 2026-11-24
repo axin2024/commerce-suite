@@ -16,6 +16,7 @@ if (!in_array($method, ['GET', 'HEAD'], true)) {
 
 try {
     assertSchemaReady(database());
+    CarrierAdapters::fromEnvironment();
     FreightStrategies::fromEnvironment();
     PaymentChannels::fromEnvironment();
     PromotionStrategies::fromEnvironment();

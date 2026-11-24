@@ -18,6 +18,7 @@ Compose 默认运行 MySQL 8.4 LTS。迁移服务在数据库可连接后执行�
 | `COMMERCE_FREIGHT_EXTENSION` | 可选，应用进程能读取的 PHP 计费文件绝对路径，详见[运费扩展](freight.md) |
 | `COMMERCE_PROMOTION_EXTENSION` | 可选，应用进程能读取的 PHP 优惠策略文件绝对路径，详见[营销扩展](promotions.md) |
 | `COMMERCE_PAYMENT_EXTENSION`、`COMMERCE_CHECKOUT_CHANNEL` | 加载并选用支付渠道。关闭演示模式后，正金额订单需要配置收银渠道，详见[支付渠道接入](payment-channels.md) |
+| `COMMERCE_CARRIER_EXTENSION`、`COMMERCE_CARRIER_WEBHOOK_SECRET` | 加载可信的承运商适配文件，示例桥接使用单独的签名密钥，详见[承运商接入](carrier-adapters.md) |
 | `COMMERCE_OPERATOR_PASSWORD` | 创建运营账号的临时密码，在执行账号创建命令时单独传入 |
 
 Compose 初始化变量只对空数据卷生效。已有库需要在 MySQL 中更新账号密码，并同时更新应用配置。对外部署应保持 `APP_DEMO=0`，只暴露 HTTPS 代理端口。登录和注册的限流由入口代理配置。PHP 内置服务器适用于本机演示与验收，正式环境请使用 PHP-FPM 和反向代理。

@@ -65,7 +65,7 @@ jobs:
           php bin/commerce.php migrate
           php bin/commerce.php seed
           python3 tests/web_smoke.py
-      - name: Run payment channel HTTP checks
+      - name: Run payment channel and carrier HTTP checks
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
           COMMERCE_PAYMENT_EXTENSION: ${{ github.workspace }}/examples/payment-bridge.php
@@ -73,6 +73,8 @@ jobs:
           COMMERCE_BRIDGE_CHECKOUT_URL: https://checkout.example.test/pay
           COMMERCE_BRIDGE_CHECKOUT_SECRET: test-only-bridge-checkout-signing-key
           COMMERCE_BRIDGE_WEBHOOK_SECRET: test-only-bridge-receipt-signing-key
+          COMMERCE_CARRIER_EXTENSION: ${{ github.workspace }}/examples/carrier-bridge.php
+          COMMERCE_CARRIER_WEBHOOK_SECRET: test-only-carrier-event-signing-key
         run: |
           php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_bridge_test CHARACTER SET utf8mb4");'
           export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_bridge_test}"
@@ -87,6 +89,7 @@ jobs:
             sleep 1
           done
           python3 tests/payment_channel_web.py
+          python3 tests/carrier_web.py
   compose:
     runs-on: ubuntu-latest
     env:

@@ -10,6 +10,7 @@ require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/PromotionStrategies.php';
 require_once __DIR__ . '/LoyaltyOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
+require_once __DIR__ . '/CarrierAdapters.php';
 require_once __DIR__ . '/ReturnOperations.php';
 require_once __DIR__ . '/SettlementOperations.php';
 require_once __DIR__ . '/ChannelBillOperations.php';
@@ -49,13 +50,16 @@ final class Commerce
     private readonly FreightStrategies $freightStrategies;
     private readonly PaymentChannels $paymentChannels;
     private readonly PromotionStrategies $promotionStrategies;
+    private readonly CarrierAdapters $carrierAdapters;
 
     public function __construct(private readonly PDO $db, ?FreightStrategies $freightStrategies = null,
-        ?PaymentChannels $paymentChannels = null, ?PromotionStrategies $promotionStrategies = null)
+        ?PaymentChannels $paymentChannels = null, ?PromotionStrategies $promotionStrategies = null,
+        ?CarrierAdapters $carrierAdapters = null)
     {
         $this->freightStrategies = $freightStrategies ?? FreightStrategies::fromEnvironment();
         $this->paymentChannels = $paymentChannels ?? PaymentChannels::fromEnvironment();
         $this->promotionStrategies = $promotionStrategies ?? PromotionStrategies::fromEnvironment();
+        $this->carrierAdapters = $carrierAdapters ?? CarrierAdapters::fromEnvironment();
     }
 
     public function rows(string $sql, array $params = []): array

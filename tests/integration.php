@@ -1265,6 +1265,46 @@ same($paidChannel, $captureChannel('channel-a', array_reverse($event, true)), 'c
 same(['channel-a', 'channel-b', 'sandbox'], array_column($app->rows('SELECT provider FROM payment_receipts
     WHERE reference=? ORDER BY provider', [$event['reference']]), 'provider'), 'each channel can use the same receipt reference');
 
+$verifyCarrier = static fn(string $body, array $headers): array => json_decode($body, true, 4, JSON_THROW_ON_ERROR);
+$carrierApp = new Commerce($db, carrierAdapters: new CarrierAdapters(['parcel_unit' => $verifyCarrier]));
+$withoutCarrier = new Commerce($db, carrierAdapters: new CarrierAdapters());
+$carrierSuborder = (int) $app->rows('SELECT id FROM merchant_orders WHERE order_id=?', [$channelOrder])[0]['id'];
+$carrierLine = $app->unshippedLines($carrierSuborder)[0];
+$carrierTracking = "carrier-$tag";
+$carrierShipment = $carrierApp->dispatchShipment($north, $carrierSuborder, (int) $carrierLine['warehouse_id'],
+    'parcel_unit', $carrierTracking, [(int) $carrierLine['id'] => 1], bin2hex(random_bytes(16)));
+denied(fn() => $withoutCarrier->recordDelivery('parcel_unit', $carrierTracking, "forged-demo-$tag"),
+    'removing the carrier configuration cannot give the sandbox access to its parcel');
+$trackingEvent = ['type' => 'in_transit', 'tracking' => $carrierTracking, 'reference' => "tracking-$tag", 'occurred_at' => time()];
+$receiveTracking = static fn(array $payload): array =>
+    $carrierApp->receiveCarrierEvent('parcel_unit', json_encode($payload, JSON_THROW_ON_ERROR), []);
+$recorded = $receiveTracking($trackingEvent);
+same($recorded, $receiveTracking(array_reverse($trackingEvent, true)), 'canonical carrier replay returns the original event');
+denied(fn() => $receiveTracking(array_replace($trackingEvent, ['type' => 'delivered'])),
+    'carrier reference cannot change status on replay');
+same(['carrier', 'in_transit', 64], array_values($app->rows('SELECT source,event_type,LENGTH(payload_sha256)
+    FROM shipment_delivery_events WHERE id=?', [$recorded['event_id']])[0]), 'shipment event preserves its source, type and canonical digest');
+same(null, $app->rows('SELECT delivered_at FROM shipments WHERE id=?', [$carrierShipment])[0]['delivered_at'],
+    'a transit receipt cannot complete a parcel');
+same([], $app->rows('SELECT id FROM ledger WHERE merchant_order_id=?', [$carrierSuborder]), 'transit receipt does not post a sale');
+
+$legacyPending = $splitFreight($app, 1);
+$legacyPendingOrder = $app->place($buyer, $legacyPending['token']);
+$app->demoPay($buyer, $legacyPendingOrder, "before-carrier-$tag", $legacyPending['total']);
+$legacySuborder = (int) $app->rows('SELECT id FROM merchant_orders WHERE order_id=?', [$legacyPendingOrder])[0]['id'];
+$legacyLine = $withoutCarrier->unshippedLines($legacySuborder)[0];
+$legacyTracking = "old-waybill-$tag";
+$legacyShipment = $withoutCarrier->dispatchShipment($north, $legacySuborder, (int) $legacyLine['warehouse_id'],
+    'parcel_unit', $legacyTracking, [(int) $legacyLine['id'] => 1], bin2hex(random_bytes(16)));
+denied(fn() => $carrierApp->recordDelivery('parcel_unit', $legacyTracking, "sandbox-switch-$tag"),
+    'a registered carrier claims new tracking even for an existing unbound parcel');
+$legacyAccepted = $receiveTracking(array_replace($trackingEvent, [
+    'type' => 'delivered', 'tracking' => $legacyTracking, 'reference' => "old-delivered-$tag",
+]));
+same($legacyShipment, $legacyAccepted['shipment_id'], 'a newly configured carrier can finish a previously unbound shipment');
+same('carrier', $app->rows('SELECT tracking_source FROM shipments WHERE id=?', [$legacyShipment])[0]['tracking_source'],
+    'first external receipt permanently binds the pending parcel to the carrier');
+
 putenv('APP_DEMO=0');
 denied(fn() => $app->place($buyer, $splitFreight($app, 1)['token']), 'external checkout requires a channel before reserving stock');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
