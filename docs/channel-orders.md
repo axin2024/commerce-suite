@@ -42,7 +42,7 @@
 
 POST 使用 `Content-Type: application/json`，上限 16 KiB。订单创建后预留 15 分钟。后台任务处理过期订单，释放库存。只有平台支付渠道的验签实收回执可以确认付款。支付后商家可在履约工作台和历史订单看到渠道代码及外部单号，按原流程发货。合作方按外部单号查询 `unpaid`、`paid`、`cancelled`，以及 `fulfillment_status` 的发货和签收状态。
 
-已在合作渠道收款的订单导入及物流明细推送需另接。
+已在合作渠道收款的订单导入及物流明细推送需单独对接。合作方可按下面的接口主动查询物流。
 
 | 状态 | 常见处理 |
 | --- | --- |
@@ -54,6 +54,17 @@ POST 使用 `Content-Type: application/json`，上限 16 KiB。订单创建后�
 | 409 `reference_conflict` | 查原单核对差异 |
 | 409 `order_not_payable`、`order_already_paid` | 先查询当前订单状态，再决定取消或走售后 |
 | 503 | 检查收银配置或按退避重试。重试提交时沿用原单号和原内容 |
+
+## 包裹与物流
+
+| 请求 | 返回 |
+| --- | --- |
+| `GET /channel-orders.php?reference=partner-ord-1&view=shipments` | `shipments` 列出该订单已发出的包裹。每个包裹含 `shipment_id`、`carrier`、`tracking`、`units`、`status`，以及发货、最近一次承运商事件和平台确认签收的时间 |
+| `GET /channel-orders.php?reference=partner-ord-1&view=shipments&shipment_id=123` | `events` 列出该包裹已记录的轨迹，每条含 `event_id`、`status`、`occurred_at` 和 `received_at` |
+
+每页至多 50 条，按包裹编号或事件入库编号升序返回。`next_after` 有值时用作下一次请求的 `after`。读到末页后可保存最后一个编号，以相同方式增量查询。晚到的承运商事件仍会出现在后续页，可按 `occurred_at` 显示实际发生顺序。
+
+时间均为 UTC Unix 秒。包裹初始为 `dispatched`，随后可见 `in_transit`、`out_for_delivery`、`exception` 或 `delivered`。晚到事件保留在轨迹中，签收后的包裹仍显示为 `delivered`。未发生签收或承运商事件的对应时间为 `null`。未发货时包裹列表为空。订单与包裹必须属于当前渠道且互相匹配，跨店或其他订单的包裹编号返回 404。
 
 ## 退货与退款
 
@@ -84,4 +95,4 @@ POST 使用 `Content-Type: application/json`，上限 16 KiB。订单创建后�
 
 ## 回归
 
-仓库的 [HTTP 回归](../tests/channel_order_web.py)使用两套 PHP 进程和同一 MySQL 测试库，覆盖重复下单、跨渠道争抢库存，以及签收、退货验收与退款回执。运行时为两套 PHP 进程配置同一组[支付桥接](payment-channels.md)和[承运商桥接](carrier-adapters.md)样例，设置 `COMMERCE_CHANNEL_TEST_SECOND_URL` 指向第二个本机地址，再向测试脚本传入第一个地址。CI 会在两版 MySQL 上执行。
+仓库的 [HTTP 回归](../tests/channel_order_web.py)使用两套 PHP 进程和同一 MySQL 测试库，覆盖重复下单、跨渠道争抢库存、包裹轨迹分页、签收、退货验收与退款回执。运行时为两套 PHP 进程配置同一组[支付桥接](payment-channels.md)和[承运商桥接](carrier-adapters.md)样例，设置 `COMMERCE_CHANNEL_TEST_SECOND_URL` 指向第二个本机地址，再向测试脚本传入第一个地址。CI 会在两版 MySQL 上执行。

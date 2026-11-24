@@ -104,6 +104,51 @@ trait ChannelOrderOperations
         return self::channelOrderState($this->requiredChannelOrder($channel, $reference));
     }
 
+    public function channelShipmentPage(string $token, mixed $reference, ?int $shipment, int $after): array
+    {
+        $reference = self::channelOrderReference($reference);
+        $channel = $this->channelOrderCredential($token);
+        $order = $this->requiredChannelOrder($channel, $reference);
+        $merchantOrder = (int) $order['merchant_order_id'];
+        if ($shipment === null) {
+            $rows = $this->shipments($merchantOrder, $after);
+            return ['reference' => $reference]
+                + self::channelShipmentResult($rows, 'shipments', self::channelShipmentState(...));
+        }
+
+        $parcel = $this->one('SELECT carrier,tracking FROM shipments WHERE id=? AND merchant_order_id=?', [$shipment, $merchantOrder]);
+        if (!$parcel) {
+            throw new ChannelOrderError(404, 'shipment_not_found');
+        }
+        $events = $this->rows('SELECT id,event_type,UNIX_TIMESTAMP(COALESCE(occurred_at,received_at)) AS occurred_at,
+            UNIX_TIMESTAMP(received_at) AS received_at FROM shipment_delivery_events
+            WHERE shipment_id=? AND id>? ORDER BY id LIMIT 51', [$shipment, $after]);
+        return ['reference' => $reference, 'shipment_id' => $shipment, 'carrier' => $parcel['carrier'], 'tracking' => $parcel['tracking']]
+            + self::channelShipmentResult($events, 'events', static fn(array $event): array => [
+                'event_id' => (int) $event['id'], 'status' => $event['event_type'],
+                'occurred_at' => (int) $event['occurred_at'], 'received_at' => (int) $event['received_at'],
+            ]);
+    }
+
+    private static function channelShipmentResult(array $rows, string $field, Closure $format): array
+    {
+        $hasMore = count($rows) > 50;
+        if ($hasMore) {
+            array_pop($rows);
+        }
+        return [$field => array_map($format, $rows), 'next_after' => $hasMore ? (int) end($rows)['id'] : null];
+    }
+
+    private static function channelShipmentState(array $parcel): array
+    {
+        return ['shipment_id' => (int) $parcel['id'], 'carrier' => $parcel['carrier'], 'tracking' => $parcel['tracking'],
+            'units' => (int) $parcel['units'],
+            'status' => $parcel['delivered_at'] ? 'delivered' : ($parcel['event_type'] ?? 'dispatched'),
+            'dispatched_at' => strtotime($parcel['dispatched_at'] . ' UTC'),
+            'delivered_at' => $parcel['delivered_at'] === null ? null : strtotime($parcel['delivered_at'] . ' UTC'),
+            'latest_event_at' => $parcel['occurred_at'] === null ? null : strtotime($parcel['occurred_at'] . ' UTC')];
+    }
+
     public function checkoutChannelOrder(string $token, mixed $reference): array
     {
         $reference = self::channelOrderReference($reference);

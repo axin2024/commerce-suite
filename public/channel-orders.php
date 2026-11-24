@@ -29,6 +29,15 @@ $token = $authorization[1];
 try {
     $app = new Commerce(database());
     if ($method === 'GET') {
+        if (($_GET['view'] ?? null) === 'shipments') {
+            $shipment = isset($_GET['shipment_id']) ? filter_var($_GET['shipment_id'], FILTER_VALIDATE_INT,
+                ['options' => ['min_range' => 1]]) : null;
+            $after = filter_var($_GET['after'] ?? '0', FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+            if ($shipment === false || $after === false || isset($_GET['return_reference'])) {
+                channelOrderReply(422, ['error' => 'invalid_shipment_query']);
+            }
+            channelOrderReply(200, $app->channelShipmentPage($token, $_GET['reference'] ?? null, $shipment, $after));
+        }
         if (isset($_GET['return_reference'])) {
             channelOrderReply(200, $app->getChannelReturn($token, $_GET['reference'] ?? null, $_GET['return_reference']));
         }

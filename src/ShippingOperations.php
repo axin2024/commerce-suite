@@ -74,15 +74,17 @@ trait ShippingOperations
             . ' GROUP BY a.id,w.name,i.sku,i.name HAVING remaining>0 ORDER BY a.warehouse_id,a.id', $args);
     }
 
-    public function shipments(int $order): array
+    public function shipments(int $order, ?int $after = null): array
     {
-        return $this->rows('SELECT s.id,s.carrier,s.tracking,s.dispatched_at,s.delivered_at,w.name AS warehouse_name,
+        $sql = 'SELECT s.id,s.carrier,s.tracking,s.dispatched_at,s.delivered_at,w.name AS warehouse_name,
             (SELECT SUM(si.quantity) FROM shipment_items si WHERE si.shipment_id=s.id) AS units,
             latest.event_type,latest.occurred_at
             FROM shipments s JOIN warehouses w ON w.id=s.warehouse_id
             LEFT JOIN LATERAL (SELECT event_type,occurred_at FROM shipment_delivery_events
                 WHERE shipment_id=s.id AND occurred_at IS NOT NULL ORDER BY occurred_at DESC,id DESC LIMIT 1) latest ON TRUE
-            WHERE s.merchant_order_id=? ORDER BY s.id', [$order]);
+            WHERE s.merchant_order_id=?';
+        return $after === null ? $this->rows($sql . ' ORDER BY s.id', [$order])
+            : $this->rows($sql . ' AND s.id>? ORDER BY s.id LIMIT 51', [$order, $after]);
     }
 
     public static function validTracking(string $carrier, string $tracking): bool
