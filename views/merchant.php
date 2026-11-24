@@ -60,7 +60,7 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
 <?php if ($canCatalog) { require __DIR__ . '/catalog_workbench.php'; } ?>
 <?php if ($canFulfill):
     $merchantOrders = $app->rows("SELECT m.*,o.channel,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
-        WHERE m.shop_id=? AND m.status IN ('ready','fulfilled') ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
+        WHERE m.shop_id=? AND m.status IN ('ready','partial','shipped','fulfilled') ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
 <section class="panel" id="fulfillment">
     <h2>订单履约</h2>
     <?php if (!$merchantOrders): ?><p class="muted">暂无已付款订单。</p><?php endif; ?>
@@ -74,11 +74,36 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
                         <span class="muted"><?= e($line['sku']) ?> <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?></span></div>
                 <?php endforeach; ?>
             </div>
-            <?php if ($order['status'] === 'ready'): ?>
+            <?php if ($order['channel'] === 'web'):
+                $groups = [];
+                if (in_array($order['status'], ['ready', 'partial'], true)) {
+                    foreach ($app->unshippedLines((int) $order['id']) as $line) {
+                        $groups[$line['warehouse_id']][] = $line;
+                    }
+                }
+                foreach ($groups as $warehouse => $lines): ?>
+                    <details><summary><?= e($lines[0]['warehouse_name']) ?> · 新建包裹</summary>
+                        <?php form('shipment_dispatch'); echo field('merchant_order', $order['id']),
+                            field('warehouse', $warehouse), field('key', bin2hex(random_bytes(16))); ?>
+                        <?php foreach ($lines as $line): ?>
+                            <label><?= e($line['sku']) ?> · 待发 <?= e($line['remaining']) ?>
+                                <input type="number" name="quantities[<?= e($line['id']) ?>]" min="0"
+                                    max="<?= e($line['remaining']) ?>" value="<?= e($line['remaining']) ?>" required>
+                            </label>
+                        <?php endforeach; ?>
+                        <label>承运商代码<input name="carrier" maxlength="32" pattern="[A-Za-z0-9_\-]+" required></label>
+                        <label>运单号<input name="tracking" maxlength="80" pattern="[A-Za-z0-9_\-]+" required></label>
+                        <button>登记发货</button></form>
+                    </details>
+                <?php endforeach;
+                $parcels = $app->shipments((int) $order['id']);
+                require __DIR__ . '/shipment_list.php';
+            elseif ($order['status'] === 'ready'): ?>
                 <?php form('fulfill'); echo field('merchant_order', $order['id']); ?>
-                <label><?= $order['channel'] === 'web' ? '物流单号' : '自提核验编号' ?><input name="tracking" maxlength="40" required></label>
+                <label>自提核验编号<input name="tracking" maxlength="40" required></label>
                 <button>确认履约</button></form>
-            <?php else: ?><span><?= e($order['tracking']) ?></span><?php endif; ?>
+            <?php endif; ?>
+            <?php if ($order['tracking']): ?><span><?= e($order['tracking']) ?></span><?php endif; ?>
         </div>
     <?php endforeach; ?>
 </section>

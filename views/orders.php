@@ -34,6 +34,10 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                 <div class="heading"><h3><?= e($merchantOrder['name']) ?> <?= badge($merchantOrder['status']) ?></h3>
                     <strong><?= cash($merchantOrder['total']) ?></strong></div>
                 <?php if ($merchantOrder['tracking']): ?><p class="muted">履约单号 <?= e($merchantOrder['tracking']) ?></p><?php endif; ?>
+                <?php if ($order['channel'] === 'web'):
+                    $parcels = $app->shipments((int) $merchantOrder['id']);
+                    require __DIR__ . '/shipment_list.php';
+                endif; ?>
                 <?php foreach ($app->rows('SELECT i.*,r.color,r.size,
                     (SELECT COALESCE(SUM(r.quantity),0) FROM refunds r WHERE r.item_id=i.id AND r.status=\'pending\') AS pending_qty
                     FROM order_items i LEFT JOIN product_releases r ON r.id=i.product_release_id

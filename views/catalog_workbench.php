@@ -1,6 +1,11 @@
 <?php
 $categories = $app->categories();
 $products = $app->merchantCatalog((int) $user['id']);
+$warehouses = $app->merchantWarehouses((int) $user['id']);
+$balances = [];
+foreach ($app->merchantStock((int) $user['id']) as $balance) {
+    $balances[$balance['product_id']][$balance['warehouse_id']] = $balance;
+}
 $releaseStates = ['legacy' => '旧版导入', 'pending' => '待审核', 'approved' => '通过', 'rejected' => '拒绝', 'withdrawn' => '已撤回'];
 $skuForm = static function (?array $product) use ($categories): void {
     $current = $product['proposed_price'] ?? $product['price'] ?? null;
@@ -14,7 +19,7 @@ $skuForm = static function (?array $product) use ($categories): void {
     <div class="inputs">
         <?php if (!$product): ?>
             <label>SKU<input name="sku" required maxlength="64" pattern="[A-Za-z0-9_\-]+"></label>
-            <label>初始在库<input type="number" name="stock" value="0" min="0" max="1000000000" required></label>
+            <label>主仓初始在库<input type="number" name="stock" value="0" min="0" max="1000000000" required></label>
         <?php endif; ?>
         <label>名称<input name="name" value="<?= e($product['proposed_name'] ?? $product['name'] ?? '') ?>" required maxlength="160"></label>
         <label>系列<input name="family" value="<?= e($product['family_name'] ?? '') ?>" required maxlength="160"></label>
@@ -39,6 +44,19 @@ $skuForm = static function (?array $product) use ($categories): void {
 ?>
 <section class="panel" id="products">
     <h2>商品与库存</h2>
+    <details><summary>仓库管理</summary>
+        <?php foreach ($warehouses as $warehouse): ?>
+            <div class="record"><strong><?= e($warehouse['name']) ?> · <?= e($warehouse['code']) ?></strong>
+                <span class="muted"><?= e($warehouse['address'] ?? '默认仓库') ?></span></div>
+        <?php endforeach; ?>
+        <?php form('warehouse_create'); ?>
+        <div class="inputs">
+            <label>编号<input name="code" maxlength="32" pattern="[A-Za-z0-9_\-]+" required></label>
+            <label>仓库名称<input name="name" maxlength="100" required></label>
+            <label>仓库地址<input name="address" maxlength="250" required></label>
+        </div>
+        <button class="secondary">新增仓库</button></form>
+    </details>
     <details><summary>新增商品</summary>
         <?php if ($categories): $skuForm(null); else: ?><p class="muted">请先由平台添加商品分类。</p><?php endif; ?>
     </details>
@@ -55,12 +73,17 @@ $skuForm = static function (?array $product) use ($categories): void {
                 </p>
             <?php endif; ?>
             <?php $skuForm($product); ?>
-            <?php form('sku_stock'); echo field('product', $product['id']), field('version', $product['version']); ?>
-            <div class="inline">
-                <label>在库总量<input name="stock" type="number" min="<?= e($product['reserved']) ?>" max="1000000000" value="<?= e($product['stock']) ?>" required></label>
-                <button class="secondary">调整库存</button>
-            </div>
-            </form>
+            <?php foreach ($warehouses as $warehouse):
+                $balance = $balances[$product['id']][$warehouse['id']] ?? ['stock' => 0, 'reserved' => 0];
+                form('sku_stock');
+                echo field('product', $product['id']), field('version', $product['version']), field('warehouse', $warehouse['id']); ?>
+                <div class="inline">
+                    <label><?= e($warehouse['name']) ?>（预留 <?= e($balance['reserved']) ?>）
+                        <input name="stock" type="number" min="<?= e($balance['reserved']) ?>" max="1000000000" value="<?= e($balance['stock']) ?>" required></label>
+                    <button class="secondary">调整库存</button>
+                </div>
+                </form>
+            <?php endforeach; ?>
             <?php if ($product['status'] === 'active' || $product['review_state'] === 'pending'):
                 form('sku_unlist'); echo field('product', $product['id']); ?>
                 <button class="secondary"><?= $product['status'] === 'active' ? '立即下架' : '撤回待审版本' ?></button></form>

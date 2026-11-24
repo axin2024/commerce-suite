@@ -3,14 +3,18 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
+require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
+require_once __DIR__ . '/ShippingOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
 final class Commerce
 {
     use CatalogOperations;
+    use InventoryOperations;
     use PromotionOperations;
+    use ShippingOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -160,6 +164,7 @@ final class Commerce
                 $id = $this->insert('INSERT INTO users (email,password_hash,role,shop_id) VALUES (?,?,?,?)',
                     [$email, password_hash($password, PASSWORD_DEFAULT), $shop ? 'merchant' : 'buyer', $shop]);
                 if ($shop) {
+                    $this->query("INSERT INTO warehouses (shop_id,code,name) VALUES (?,'MAIN','主仓')", [$shop]);
                     $this->query("INSERT INTO shop_members (user_id,shop_id,position) VALUES (?,?,'owner')", [$id, $shop]);
                     $this->audit($admin ?? $id, 'shop.applied', $shop, ['owner_id' => $id]);
                 }
@@ -422,14 +427,18 @@ final class Commerce
             }
             $shopId = (int) $shop['id'];
             $price = (int) $product['price'];
+            $allocation = $this->allocateWarehouses($id, $quantity, $channel, $lock);
             $items[$id] = [
                 'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'], 'release_id' => (int) $product['release_id'],
                 'category_id' => $product['category_id'] === null ? null : (int) $product['category_id'],
                 'quantity' => $quantity, 'list_price' => $price,
                 'unit_price' => $hasMemberPrice ? (int) ($product['member_price'] ?? $price) : $price,
-                'fee_bps' => (int) $shop['commission_bps'],
+                'fee_bps' => (int) $shop['commission_bps'], 'allocation' => $allocation,
             ];
-            $shops[$shopId] = ['shipping' => $channel === 'web' ? 800 : 0, 'total' => 0];
+            $shops[$shopId] ??= ['warehouses' => [], 'shipping' => 0, 'total' => 0];
+            foreach ($allocation as $warehouse => $units) {
+                $shops[$shopId]['warehouses'][$warehouse] = ($shops[$shopId]['warehouses'][$warehouse] ?? 0) + $units;
+            }
         }
         $offer = $this->pricePromotion($buyer, $items, $coupon, $lock);
         $subtotal = $memberSavings = 0;
@@ -444,11 +453,12 @@ final class Commerce
             $shops[$item['shop']]['total'] += $net;
         }
         unset($item);
-        $shipping = array_sum(array_column($shops, 'shipping'));
         foreach ($shops as &$shop) {
+            $shop['shipping'] = $channel === 'web' ? 800 * count($shop['warehouses']) : 0;
             $shop['total'] += $shop['shipping'];
         }
         unset($shop);
+        $shipping = array_sum(array_column($shops, 'shipping'));
         ksort($shops);
         return [
             'cart' => $cart, 'channel' => $channel, 'destination' => $destination, 'coupon' => $coupon, 'promotion' => $offer['promotion'],
@@ -528,7 +538,7 @@ final class Commerce
             $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'], $snapshot['coupon'] ?? null, true);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
-                throw new RuleViolation('商品或价格已变化，请重新报价。');
+                throw new RuleViolation('商品、价格或分仓结果已变化，请重新报价。');
             }
             $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
                 promotion_revision_id,expires_at) VALUES (?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
@@ -545,12 +555,12 @@ final class Commerce
                     VALUES (?,?,?,?)', [$order, $shop, $totals['total'], $totals['shipping']]);
             }
             foreach ($current['items'] as $product => $item) {
-                $this->query('UPDATE products SET reserved=reserved+?,version=version+1 WHERE id=?', [$item['quantity'], $product]);
-                $this->query('INSERT INTO order_items
+                $line = $this->insert('INSERT INTO order_items
                     (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price)
                     VALUES (?,?,?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
                         $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price']]);
+                $this->reserveInventory($line, $product, $item['allocation']);
             }
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);
@@ -562,16 +572,6 @@ final class Commerce
             }
             return $order;
         });
-    }
-
-    private function orderInventory(int $order, bool $consume): void
-    {
-        $items = $this->rows('SELECT i.product_id,i.quantity FROM order_items i
-            JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE m.order_id=? ORDER BY i.product_id', [$order]);
-        foreach ($items as $item) {
-            $this->query('UPDATE products SET reserved=reserved-?, stock=stock-?, version=version+1 WHERE id=?',
-                [$item['quantity'], $consume ? $item['quantity'] : 0, $item['product_id']]);
-        }
     }
 
     public function demoPay(int $buyer, int $orderId, string $reference, int $amount): int
@@ -763,24 +763,30 @@ final class Commerce
     {
         $tracking = trim($tracking);
         if ($tracking === '' || strlen($tracking) > 120) {
-            throw new RuleViolation('请填写物流单号或自提核验编号。');
+            throw new RuleViolation('请填写自提核验编号。');
         }
         $this->transaction(function () use ($merchant, $id, $tracking): void {
             $actor = $this->shopActor($merchant, 'fulfillment');
             $this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
-            $order = $this->one('SELECT * FROM merchant_orders WHERE id=? AND shop_id=? FOR UPDATE',
-                [$id, $actor['shop_id']]);
+            $order = $this->one("SELECT m.* FROM merchant_orders m JOIN orders o ON o.id=m.order_id
+                WHERE m.id=? AND m.shop_id=? AND o.channel='store' FOR UPDATE", [$id, $actor['shop_id']]);
             if (!$order || $order['status'] !== 'ready') {
                 throw new RuleViolation('子订单无权访问或当前状态不可履约。');
             }
-            $commission = (int) $this->one('SELECT SUM(commission) AS total FROM order_items WHERE merchant_order_id=?',
-                [$id])['total'];
-            $this->query("UPDATE merchant_orders SET status='fulfilled',tracking=?,fulfilled_at=UTC_TIMESTAMP() WHERE id=?",
-                [$tracking, $id]);
-            $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
-                VALUES (?,?,?,'sale',?,?)", [$actor['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
-            $this->audit($merchant, 'order.fulfilled', $id);
+            $this->completeMerchantOrder($order, $merchant, $tracking);
         });
+    }
+
+    private function completeMerchantOrder(array $order, ?int $actor, ?string $tracking = null): void
+    {
+        $id = (int) $order['id'];
+        $commission = (int) $this->one('SELECT SUM(commission) AS total FROM order_items WHERE merchant_order_id=?',
+            [$id])['total'];
+        $this->query("UPDATE merchant_orders SET status='fulfilled',tracking=?,fulfilled_at=UTC_TIMESTAMP() WHERE id=?",
+            [$tracking, $id]);
+        $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
+            VALUES (?,?,?,'sale',?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
+        $this->audit($actor, 'order.fulfilled', $id);
     }
 
     public function requestRefund(int $buyer, int $itemId, int $quantity, string $reason, string $key): int

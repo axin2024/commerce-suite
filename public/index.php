@@ -83,7 +83,8 @@ function badge(string $status): string
     $labels = [
         'pending' => '待审核', 'active' => '已启用', 'rejected' => '已拒绝', 'suspended' => '暂停营业',
         'draft' => '草稿', 'archived' => '已归档', 'unpaid' => '待付款',
-        'paid' => '已付款', 'ready' => '待履约', 'fulfilled' => '已履约',
+        'paid' => '已付款', 'ready' => '待履约', 'fulfilled' => '已履约', 'partial' => '部分发货',
+        'shipped' => '待签收',
         'cancelled' => '已取消', 'approved' => '已审批',
     ];
     return '<span class="badge ' . e($status) . '">' . e($labels[$status] ?? $status) . '</span>';
@@ -226,7 +227,11 @@ try {
                         input('member_price') === '' ? null : cents('member_price'));
                     break;
                 case 'sku_stock':
-                    $app->adjustStock($id, number('product'), number('stock', 0, 1_000_000_000), number('version', 0));
+                    $app->adjustStock($id, number('product'), number('stock', 0, 1_000_000_000), number('version', 0),
+                        number('warehouse'));
+                    break;
+                case 'warehouse_create':
+                    $app->createWarehouse($id, input('code'), input('name'), input('address'));
                     break;
                 case 'sku_unlist':
                     $app->unlistSku($id, number('product'));
@@ -258,6 +263,24 @@ try {
                     break;
                 case 'fulfill':
                     $app->fulfill($id, number('merchant_order'), input('tracking'));
+                    break;
+                case 'shipment_dispatch':
+                    $submitted = $_POST['quantities'] ?? null;
+                    if (!is_array($submitted) || count($submitted) > 30) {
+                        throw new RuleViolation('包裹商品明细无效。');
+                    }
+                    $quantities = [];
+                    foreach ($submitted as $allocation => $value) {
+                        if (!is_int($allocation) || $allocation < 1 || !is_string($value)
+                            || !preg_match('/^(?:0|[1-9][0-9]?)$/D', $value)) {
+                            throw new RuleViolation('发货数量须为 0–99 的整数。');
+                        }
+                        if ($value !== '0') {
+                            $quantities[$allocation] = (int) $value;
+                        }
+                    }
+                    $app->dispatchShipment($id, number('merchant_order'), number('warehouse'),
+                        input('carrier'), input('tracking'), $quantities, input('key'));
                     break;
                 case 'refund':
                     $app->requestRefund($id, number('item'), number('quantity', 1, 99), input('reason'), input('key'));

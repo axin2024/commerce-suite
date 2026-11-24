@@ -41,6 +41,7 @@ jobs:
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
           COMMERCE_SANDBOX_WEBHOOK_SECRET: test-only-commerce-suite-webhook-key
+          COMMERCE_SANDBOX_SHIPPING_SECRET: test-only-commerce-suite-shipping-key
         run: |
           php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_suite_web_test CHARACTER SET utf8mb4");'
           export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_suite_web_test}"

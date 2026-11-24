@@ -28,6 +28,16 @@ function demoEnabled(): bool
 
 function sandboxWebhookSecret(): ?string
 {
-    $secret = getenv('COMMERCE_SANDBOX_WEBHOOK_SECRET');
+    return sandboxSecret('COMMERCE_SANDBOX_WEBHOOK_SECRET');
+}
+
+function sandboxShippingSecret(): ?string
+{
+    return sandboxSecret('COMMERCE_SANDBOX_SHIPPING_SECRET');
+}
+
+function sandboxSecret(string $variable): ?string
+{
+    $secret = getenv($variable);
     return demoEnabled() && is_string($secret) && strlen($secret) >= 32 ? $secret : null;
 }

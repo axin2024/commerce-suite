@@ -16,6 +16,7 @@ from uuid import uuid4
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080"
 SANDBOX_SECRET = os.environ.get("COMMERCE_SANDBOX_WEBHOOK_SECRET")
+SHIPPING_SECRET = os.environ.get("COMMERCE_SANDBOX_SHIPPING_SECRET")
 if urllib.parse.urlsplit(BASE).hostname not in ("127.0.0.1", "localhost", "::1"):
     raise SystemExit("Run this check against a local demo instance.")
 
@@ -49,12 +50,12 @@ def extract(html, name):
     return match.group(1)
 
 
-def webhook(payload, timestamp=None, signature=None):
+def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.php", secret=SANDBOX_SECRET):
     body = json.dumps(payload, separators=(",", ":")).encode()
     timestamp = str(int(time.time()) if timestamp is None else timestamp)
     if signature is None:
-        signature = hmac.new(SANDBOX_SECRET.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    request = urllib.request.Request(BASE + "/payment-webhook.php", data=body, headers={
+        signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(BASE + "/" + endpoint, data=body, headers={
         "Content-Type": "application/json",
         "X-Commerce-Timestamp": timestamp,
         "X-Commerce-Signature": signature,
@@ -208,3 +209,53 @@ blocked = buyer.submit("/?page=cart", "place", token=extract(variant_quote, "tok
 assert "商品已下架" in blocked
 assert "当前没有符合条件的商品" in buyer.load(listing)
 print("Catalog web flow passed: category, variant, review, channel filter, unlisting, and stale checkout rejection.")
+
+if SHIPPING_SECRET:
+    warehouse_name = "分仓验收仓"
+    owner.submit("/?page=merchant", "warehouse_create", code="EAST", name=warehouse_name, address="测试仓库地址")
+    delivery_sku = f"WEB-{suffix}"
+    owner.submit("/?page=merchant", "sku_submit", product=0, revision=0, sku=delivery_sku, name="可配送验收款",
+                 family="配送验收系列", category=category[1], price="12.00", stock=1, delivery=1)
+    admin.submit("/?page=platform", "sku_review", release=extract(admin.load("/?page=platform"), "release"), decision="approve")
+    delivery_listing = f"/?q={delivery_sku}&channel=web"
+    delivery_product = extract(buyer.load(delivery_listing), "product")
+    stock_forms = re.findall(r"<form [^>]*>.*?</form>", owner.load("/?page=merchant"), flags=re.S)
+    stock_form, = (form for form in stock_forms if 'name="action" value="sku_stock"' in form
+                   and warehouse_name in form and extract(form, "product") == delivery_product)
+    owner.submit("/?page=merchant", "sku_stock", product=delivery_product, stock=2, csrf=extract(stock_form, "csrf"),
+                 version=extract(stock_form, "version"), warehouse=extract(stock_form, "warehouse"))
+    buyer.submit("/?page=cart", "cart", product=variant_product, remove=1)
+    buyer.submit(delivery_listing, "cart", product=delivery_product, quantity=3)
+    split = buyer.submit("/?page=cart", "quote", channel="web", destination="网页配送验收地址")
+    assert "<dt>发货仓数</dt><dd>2</dd>" in split and "¥52.00" in split
+    open_order = buyer.submit("/?page=cart", "place", token=extract(split, "token"))
+    buyer.submit("/?page=orders", "pay", order=extract(open_order, "order"), amount=5200)
+    ready = owner.load("/?page=merchant")
+    parcel_forms = [form for form in re.findall(r"<form [^>]*>.*?</form>", ready, flags=re.S)
+                    if 'name="action" value="shipment_dispatch"' in form]
+    assert len(parcel_forms) == 2
+
+    def dispatch(form, tracking):
+        quantity_name, quantity = re.search(r'name="(quantities\[\d+\])"[^>]*value="(\d+)"', form).groups()
+        return owner.submit("/?page=merchant", "shipment_dispatch", csrf=extract(form, "csrf"),
+                            merchant_order=extract(form, "merchant_order"), warehouse=extract(form, "warehouse"),
+                            key=extract(form, "key"), carrier="demo", tracking=tracking, **{quantity_name: quantity})
+
+    tracking_a, tracking_b = f"WEB-A-{suffix}", f"WEB-B-{suffix}"
+    partial = dispatch(parcel_forms[0], tracking_a)
+    assert tracking_a in partial and "部分发货" in partial
+    shipped = dispatch(parcel_forms[1], tracking_b)
+    assert tracking_b in shipped and "待签收" in shipped
+    event_b = {"carrier": "demo", "tracking": tracking_b, "event_reference": f"event-b-{suffix}"}
+    if SANDBOX_SECRET and SANDBOX_SECRET != SHIPPING_SECRET:
+        assert webhook(event_b, endpoint="shipping-webhook.php") == (401, {"error": "invalid_signature"})
+    signed_b = webhook(event_b, endpoint="shipping-webhook.php", secret=SHIPPING_SECRET)
+    assert signed_b[0] == 200 and signed_b[1]["status"] == "delivered"
+    assert webhook(event_b, endpoint="shipping-webhook.php", secret=SHIPPING_SECRET) == signed_b
+    assert "待签收" in owner.load("/?page=merchant")
+    event_a = {"carrier": "demo", "tracking": tracking_a, "event_reference": f"event-a-{suffix}"}
+    assert webhook(event_a, endpoint="shipping-webhook.php", secret=SHIPPING_SECRET)[0] == 200
+    delivered = buyer.load("/?page=orders").split("</article>", 1)[0]
+    assert tracking_a in delivered and tracking_b in delivered and delivered.count("已签收") == 2 and "已履约" in delivered
+    assert "¥52.00" in owner.load("/?page=merchant").split('id="finance"', 1)[1]
+    print("Delivery web flow passed: split freight, warehouse stock, parcel dispatch, signed delivery, and sale ledger.")

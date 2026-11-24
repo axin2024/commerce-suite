@@ -278,6 +278,84 @@ same($cartOrder, $app->place($buyer, $cartQuote['token'], requireCartQuote: true
 same([$b], array_map('intval', array_column($app->cartLines($buyer), 'product_id')), 'checkout keeps unselected lines');
 same(true, $app->cancel($cartOrder, $buyer), 'test cart hold released');
 
+$main = (int) $app->merchantWarehouses($north)[0]['id'];
+$east = $app->createWarehouse($catalogStaff, "EAST-$tag", '东区仓', '示例东区配送中心');
+$foreignWarehouse = (int) $app->merchantWarehouses($pond)[0]['id'];
+denied(fn() => $app->createWarehouse($catalogStaff, 'MAIN', '第二主仓', '示例地址'), 'warehouse code unique inside shop');
+denied(fn() => $app->createWarehouse($supportStaff, 'NO', '售后无权限', '示例地址'), 'warehouse creation requires catalog access');
+$multiRelease = $app->submitSku($north, 0, "WH-$tag", '分仓验收商品', 1200, 1, $bags, '分仓商品', '', '', true, true);
+$multiSku = $app->reviewSku($admin, $multiRelease, true);
+denied(fn() => $app->adjustStock($north, $multiSku, 3, 0, $foreignWarehouse), 'cannot adjust stock in another shop’s warehouse');
+$app->adjustStock($catalogStaff, $multiSku, 2, 0, $east);
+denied(fn() => $app->quote($buyer, [$multiSku => 2], 'store', '门店自提'), 'pickup cannot allocate remote delivery stock');
+$multiQuote = $app->quote($buyer, [$multiSku => 3], 'web', '分仓配送地址');
+same([$main => 1, $east => 2], $multiQuote['items'][$multiSku]['allocation'], 'one SKU distributed between two warehouses');
+same(1600, $multiQuote['shipping'], 'delivery charge calculated per shipping group');
+$multiOrder = $app->place($buyer, $multiQuote['token']);
+$multiBalance = static function () use ($app, $multiSku): array {
+    return array_map(static fn(array $row): array => array_map('intval', array_values($row)), $app->rows(
+        'SELECT warehouse_id,stock,reserved FROM warehouse_stock WHERE product_id=? ORDER BY warehouse_id', [$multiSku]));
+};
+same([[$main, 1, 1], [$east, 2, 2]], $multiBalance(), 'stock held separately in each warehouse');
+denied(fn() => $app->adjustStock($north, $multiSku, 1, 2, $east), 'cannot lower a warehouse below its hold');
+same(true, $app->cancel($multiOrder, $buyer), 'cancel releases all warehouse holds');
+same([[$main, 1, 0], [$east, 2, 0]], $multiBalance(), 'cancel restores availability for both warehouse balances');
+$staleAllocation = $app->quote($buyer, [$multiSku => 2], 'web', '分仓配送地址');
+$app->adjustStock($north, $multiSku, 0, 3, $main);
+denied(fn() => $app->place($buyer, $staleAllocation['token']), 'changed fulfillment plan requires a new confirmation');
+$app->adjustStock($north, $multiSku, 1, 4, $main);
+$multiPaidQuote = $app->quote($buyer, [$multiSku => 3], 'web', '分仓配送地址');
+$multiPaidOrder = $app->place($buyer, $multiPaidQuote['token']);
+$app->demoPay($buyer, $multiPaidOrder, "multi-$tag", $multiPaidQuote['total']);
+same([[$main, 0, 0], [$east, 0, 0]], $multiBalance(), 'payment consumes each warehouse hold and stock');
+$soldAllocations = $app->rows('SELECT a.id,a.state,a.quantity,m.id AS merchant_order_id FROM order_inventory_allocations a
+    JOIN order_items i ON i.id=a.order_item_id JOIN merchant_orders m ON m.id=i.merchant_order_id
+    WHERE m.order_id=? ORDER BY a.warehouse_id', [$multiPaidOrder]);
+same(['consumed', 'consumed'], array_column($soldAllocations, 'state'), 'paid order keeps consumed allocation history');
+same([1, 2], array_map('intval', array_column($soldAllocations, 'quantity')), 'paid order keeps fulfillment quantities by warehouse');
+$deliveryOrder = (int) $soldAllocations[0]['merchant_order_id'];
+[$mainLine, $eastLine] = array_map('intval', array_column($soldAllocations, 'id'));
+$shipmentKey = bin2hex(random_bytes(16));
+$trackingA = "A-$tag";
+$trackingB = "B-$tag";
+$trackingC = "C-$tag";
+$deliveryStatus = static fn(): string => $app->rows('SELECT status FROM merchant_orders WHERE id=?', [$deliveryOrder])[0]['status'];
+$deliveryLedger = static fn(): array => $app->rows('SELECT kind,gross FROM ledger WHERE merchant_order_id=?', [$deliveryOrder]);
+denied(fn() => $app->fulfill($north, $deliveryOrder, 'BYPASS'), 'delivery cannot be completed by the pickup action');
+denied(fn() => $app->dispatchShipment($pond, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
+    'other shop cannot dispatch delivery');
+denied(fn() => $app->dispatchShipment($catalogStaff, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
+    'catalog staff cannot dispatch delivery');
+denied(fn() => $app->dispatchShipment($fulfillmentStaff, $deliveryOrder, $east, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
+    'allocation cannot be shipped from another warehouse');
+denied(fn() => $app->dispatchShipment($fulfillmentStaff, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 2], $shipmentKey),
+    'parcel cannot exceed its allocation');
+$shipmentA = $app->dispatchShipment($fulfillmentStaff, $deliveryOrder, $main, 'DEMO', $trackingA, [$mainLine => 1], $shipmentKey);
+same($shipmentA, $app->dispatchShipment($north, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
+    'normalized repeat dispatch returns the same package');
+denied(fn() => $app->dispatchShipment($north, $deliveryOrder, $main, 'demo', $trackingB, [$mainLine => 1], $shipmentKey),
+    'request key cannot change package contents');
+same('partial', $deliveryStatus(), 'some warehouse allocations still awaiting dispatch');
+$receiptA = $app->recordDelivery('demo', $trackingA, "delivered-a-$tag");
+same($receiptA, $app->recordDelivery('demo', $trackingA, "delivered-a-$tag"), 'signed event repeat is idempotent');
+same('partial', $deliveryStatus(), 'first delivery can arrive before another parcel is sent');
+same([], $deliveryLedger(), 'partial delivery cannot create a sale ledger entry');
+denied(fn() => $app->dispatchShipment($north, $deliveryOrder, $east, 'demo', $trackingA, [$eastLine => 1], bin2hex(random_bytes(16))),
+    'carrier tracking number must be unique');
+$app->dispatchShipment($north, $deliveryOrder, $east, 'demo', $trackingB, [$eastLine => 1], bin2hex(random_bytes(16)));
+same('partial', $deliveryStatus(), 'a single warehouse may send multiple parcels');
+$app->dispatchShipment($north, $deliveryOrder, $east, 'demo', $trackingC, [$eastLine => 1], bin2hex(random_bytes(16)));
+same('shipped', $deliveryStatus(), 'every item dispatched, waiting for delivery');
+denied(fn() => $app->recordDelivery('demo', $trackingB, "delivered-a-$tag"), 'one carrier event cannot be reassigned to another package');
+$app->recordDelivery('demo', $trackingC, "delivered-c-$tag");
+same([], $deliveryLedger(), 'out-of-order delivery waits for the remaining parcel');
+$receiptB = $app->recordDelivery('demo', $trackingB, "delivered-b-$tag");
+same($receiptB, $app->recordDelivery('demo', $trackingB, "delivered-b-$tag"), 'replayed final event cannot create another sale');
+same('fulfilled', $deliveryStatus(), 'last parcel completes the merchant order');
+same([['kind' => 'sale', 'gross' => $multiPaidQuote['total']]], $deliveryLedger(), 'one sale ledger entry includes split shipping');
+same([1, 1, 1], array_map('intval', array_column($app->shipments($deliveryOrder), 'units')), 'one shipment row per parcel');
+same([[$main, 0, 0], [$east, 0, 0]], $multiBalance(), 'shipping does not deduct paid stock again');
+
 $raceRelease = $app->submitSku($north, 0, "R-$tag", '最后一件', 200, 1, $home, '并发用例', '', '', true, true);
 $race = $app->reviewSku($admin, $raceRelease, true);
 $q1 = $app->quote($buyer, [$race => 1], 'store', 'Store A');

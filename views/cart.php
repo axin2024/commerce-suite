@@ -56,6 +56,9 @@
                     <?php if ($quote['member_savings'] ?? 0): ?><dt>会员价优惠</dt><dd><?= cash(-$quote['member_savings']) ?></dd><?php endif; ?>
                     <?php if ($quote['discount']): ?><dt><?= e($quote['promotion']['name'] ?? '跨店优惠') ?></dt><dd><?= cash(-$quote['discount']) ?></dd><?php endif; ?>
                     <dt>运费</dt><dd><?= cash($quote['shipping']) ?></dd>
+                    <?php if (isset($quote['shops']) && $quote['channel'] === 'web'): ?>
+                        <dt>发货仓数</dt><dd><?= e(array_sum(array_map(static fn(array $shop): int => count($shop['warehouses'] ?? []), $quote['shops']))) ?></dd>
+                    <?php endif; ?>
                     <dt>应付金额</dt><dd><strong><?= cash($quote['total']) ?></strong></dd>
                 </dl>
                 <?php form('place'); echo field('token', $quote['token']); ?>

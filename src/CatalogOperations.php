@@ -69,6 +69,8 @@ trait CatalogOperations
                 } else {
                     $product = $this->insert('INSERT INTO products (shop_id,sku,name,price,stock) VALUES (?,?,?,?,?)',
                         [$shop, $sku, $name, $price, $stock]);
+                    $this->query('INSERT INTO warehouse_stock (product_id,warehouse_id,stock) VALUES (?,?,?)',
+                        [$product, $this->mainWarehouse($shop), $stock]);
                 }
                 $familyRow = $this->one('SELECT id FROM product_families WHERE shop_id=? AND name=?', [$shop, $family]);
                 $familyId = $familyRow['id'] ?? $this->insert('INSERT INTO product_families (shop_id,name) VALUES (?,?)', [$shop, $family]);
@@ -124,25 +126,6 @@ trait CatalogOperations
                 [$decision, $reason, $admin, $release]);
             $this->audit($admin, 'catalog.release_reviewed', $release, ['product_id' => $product, 'decision' => $decision]);
             return $product;
-        });
-    }
-
-    public function adjustStock(int $merchant, int $product, int $stock, int $version): void
-    {
-        if ($stock < 0 || $stock > 1_000_000_000) {
-            throw new RuleViolation('请检查库存数量。');
-        }
-        $this->transaction(function () use ($merchant, $product, $stock, $version): void {
-            $shop = $this->lockMerchantCatalog($merchant);
-            $previous = $this->one('SELECT stock,reserved,version FROM products WHERE id=? AND shop_id=? FOR UPDATE', [$product, $shop]);
-            if (!$previous || $stock < (int) $previous['reserved']) {
-                throw new RuleViolation('商品不存在，或库存低于已预留数量。');
-            }
-            if ($version !== (int) $previous['version']) {
-                throw new RuleViolation('库存已更新，请刷新后再调整。');
-            }
-            $this->query('UPDATE products SET stock=?,version=version+1 WHERE id=?', [$stock, $product]);
-            $this->audit($merchant, 'catalog.stock_adjusted', $product, ['before' => (int) $previous['stock'], 'after' => $stock]);
         });
     }
 
