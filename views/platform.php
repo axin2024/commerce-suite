@@ -6,11 +6,10 @@ $shopFilter = filter_var($_GET['shop'] ?? '', FILTER_VALIDATE_INT, ['options' =>
 $filter = $shopFilter ? ' WHERE l.shop_id=?' : '';
 $arguments = $shopFilter ? [$shopFilter] : [];
 $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.shop_id' . $filter . ' ORDER BY l.id DESC LIMIT 80', $arguments);
-$batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id=l.shop_id' . $filter . ' ORDER BY l.id DESC LIMIT 50', $arguments);
 ?>
 <div class="heading"><h1>平台运营</h1></div>
 <div class="tabs">
-    <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="#batches">结算批次</a>
+    <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="/?page=settlements">结算单</a>
     <?php if ($role === 'admin'): ?><a href="#catalog-review">商品审核</a><a href="#marketing">会员与营销</a><?php endif; ?>
     <?php if (demoEnabled()): ?><a href="#receipts">沙箱支付回执</a><?php endif; ?>
     <?php if ($role === 'finance' && sandboxRefundSecret() !== null): ?><a href="#return-refunds">退货退款回执</a><?php endif; ?>
@@ -47,14 +46,22 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
                 </form>
             <?php endif; ?>
             <?php if ($role === 'admin' && in_array($shop['status'], ['active', 'suspended'], true)): ?>
+                <?php if ($shop['legacy_payee_request']): ?>
+                    <details><summary>复核补录的收款主体</summary>
+                        <p><?= e($shop['legacy_payee_request']) ?></p>
+                        <?php form('review_legacy_payee'); echo field('shop', $shop['id']), field('payee', $shop['legacy_payee_request']); ?>
+                        <button name="decision" value="approve">确认主体</button>
+                        <button class="secondary" name="decision" value="reject">退回</button></form>
+                    </details>
+                <?php endif; ?>
                 <details><summary><?= $shop['status'] === 'active' ? '暂停营业' : '恢复营业' ?></summary>
                     <?php form('shop_status'); echo field('shop', $shop['id']), field('decision', $shop['status'] === 'active' ? 'suspend' : 'resume'); ?>
                     <label>原因<input name="reason" maxlength="250" required></label>
                     <button class="secondary">确认变更</button></form>
                 </details>
             <?php endif; ?>
-            <?php if ($shop['entries'] && $shop['net'] >= 0):
-                form('settle'); echo field('shop', $shop['id']); ?><button>生成结算批次</button></form>
+            <?php if ($role === 'finance' && $shop['entries']): ?>
+                <a href="/?page=settlements&amp;shop=<?= e($shop['id']) ?>&amp;period=<?= e(gmdate('Y-m')) ?>">结算预览</a>
             <?php endif; ?>
         </div>
     <?php endforeach; ?>
@@ -69,18 +76,12 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
                 <tr><td><?= e($entry['name']) ?></td><td><?= $entry['kind'] === 'sale' ? '销售' : '退款冲正' ?></td>
                     <td>#<?= e($entry['merchant_order_id']) ?></td><td><?= cash($entry['gross']) ?></td>
                     <td><?= cash($entry['commission']) ?></td><td><?= cash($entry['gross'] - $entry['commission']) ?></td>
-                    <td><?= e($entry['settlement_id'] ?? '待结算') ?></td></tr>
+                    <td><?php if ($entry['settlement_id']): ?>
+                        <a href="/?page=settlements&amp;batch=<?= e($entry['settlement_id']) ?>">#<?= e($entry['settlement_id']) ?></a>
+                    <?php else: ?>待结算<?php endif; ?></td></tr>
             <?php endforeach; ?></tbody>
         </table></div>
     <?php endif; ?>
-</section>
-<section class="panel" id="batches">
-    <h2>结算批次</h2>
-    <?php if (!$batches): ?><p class="muted">暂无批次。</p><?php endif; ?>
-    <?php foreach ($batches as $batch): ?>
-        <div class="record"><span>#<?= e($batch['id']) ?> · <?= e($batch['name']) ?> · <?= e($batch['created_at']) ?> UTC</span>
-            <strong><?= cash($batch['amount']) ?></strong></div>
-    <?php endforeach; ?>
 </section>
 <?php if (demoEnabled()): ?>
 <section class="panel" id="receipts">

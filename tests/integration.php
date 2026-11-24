@@ -35,7 +35,7 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
-if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker'], true)) {
+if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
@@ -44,6 +44,8 @@ if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker'], true)
             echo "placed\n";
         } elseif ($worker === 'pickup-worker') {
             echo $app->redeemPickup((int) $argv[2], (int) $argv[3], (int) $argv[4], $argv[5]) ? "redeemed\n" : "already-redeemed\n";
+        } elseif ($worker === 'settlement-worker') {
+            echo 'frozen-' . $app->freezeSettlement((int) $argv[2], (int) $argv[3], $argv[4], 'CNY', $argv[5]) . "\n";
         } elseif ($argv[2] === 'receive') {
             $app->receivePreorder((int) $argv[3], (int) $argv[4], (int) $argv[5]);
             echo "received\n";
@@ -91,6 +93,11 @@ $tag = bin2hex(random_bytes(5));
 $pw = 'IntegrationFixture-6-2026';
 $admin = $app->provisionOperator("admin-$tag@example.test", $pw, 'admin');
 $finance = $app->provisionOperator("finance-$tag@example.test", $pw, 'finance');
+$payout = $app->provisionOperator("payout-$tag@example.test", $pw, 'payout');
+$calendar = new DateTimeImmutable(gmdate('Y-m-01'), new DateTimeZone('UTC'));
+$currentPeriod = $calendar->format('Y-m');
+$deliveryPeriod = $calendar->modify('-1 month')->format('Y-m');
+$openingPeriod = $calendar->modify('-2 months')->format('Y-m');
 $buyer = $app->register("buyer-$tag@example.test", $pw);
 $otherBuyer = $app->register("buyer2-$tag@example.test", $pw);
 $north = $app->register("north-$tag@example.test", $pw, '北仓');
@@ -120,8 +127,19 @@ same(Commerce::AGREEMENT_VERSION, $approvalDetails['agreement_version'], 'approv
 denied(fn() => $app->createPlatformShop($finance, "house-$tag@example.test", $pw, '自营旗舰店', '平台商行'),
     'only operations can create platform shops');
 $house = $app->createPlatformShop($admin, "house-$tag@example.test", $pw, '自营旗舰店', '平台商行');
-same('platform', $app->rows('SELECT kind FROM shops WHERE id=?', [$app->profile($house)['shop_id']])[0]['kind'],
+$houseShop = (int) $app->profile($house)['shop_id'];
+same('platform', $app->rows('SELECT kind FROM shops WHERE id=?', [$houseShop])[0]['kind'],
     'platform shop has distinct operating model');
+$app->reviewShop($admin, $houseShop, true);
+$db->prepare('UPDATE shops SET payee_name=NULL,agreement_version=NULL WHERE id=?')->execute([$houseShop]);
+$app->submitShopAgreement($house, '补录自营主体');
+denied(fn() => $app->reviewLegacyPayee($finance, $houseShop, '补录自营主体', true), 'finance cannot approve legal payee');
+denied(fn() => $app->reviewLegacyPayee($admin, $houseShop, '旧页面主体名', true), 'payee review cannot confirm stale application');
+same(['status' => 'active', 'payee_name' => null], $app->rows('SELECT status,payee_name FROM shops WHERE id=?', [$houseShop])[0],
+    'legacy shop stays active before legal payee review');
+$app->reviewLegacyPayee($admin, $houseShop, '补录自营主体', true);
+same(['status' => 'active', 'payee_name' => '补录自营主体'], $app->rows('SELECT status,payee_name FROM shops WHERE id=?', [$houseShop])[0],
+    'legacy legal payee is verified without changing shop status');
 $catalogEmail = "north-catalog-$tag@example.test";
 $catalogStaff = $app->addShopMember($north, $catalogEmail, $pw, 'catalog');
 $fulfillmentStaff = $app->addShopMember($north, "north-ship-$tag@example.test", $pw, 'fulfillment');
@@ -274,27 +292,72 @@ $returnDetails = static fn(int $id): array => $app->rows('SELECT * FROM refunds 
 $returnToken = $returnDetails($refund)['refund_token'];
 $returnReceipt = static fn(string $reference, int $amount, string $payment = ''): array =>
     $app->recordReturnReceipt($returnToken, $reference, $payment ?: "pay-$tag", 'CNY', $amount);
+$postDate = $db->prepare('UPDATE ledger SET created_at=? WHERE merchant_order_id=?');
+$postDate->execute([$openingPeriod . '-10 12:00:00', $northOrder]);
+$postDate->execute([$openingPeriod . '-10 12:00:00', $pondOrder]);
+$staleSettlement = $app->previewSettlement($finance, $northShop, $openingPeriod, 'CNY');
+same(9720, $staleSettlement['net'], 'sale preview before the merchant return is confirmed');
 denied(fn() => $returnReceipt("return-paid-$tag", 10801), 'channel cannot exceed the authorized amount');
 denied(fn() => $returnReceipt("return-paid-$tag", 10800, "unrelated-$tag"), 'refund is bound to the original payment');
 same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'accepted return refunds 108');
 same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'signed refund repeat has no side effects');
 denied(fn() => $returnReceipt("changed-ref-$tag", 10800), 'confirmed intent cannot be assigned to another refund receipt');
 same($fulfillmentStaff, (int) $returnDetails($refund)['inspected_by'], 'return history preserves the inspector');
+$db->prepare('UPDATE ledger SET created_at=? WHERE event_key=?')->execute([$openingPeriod . '-16 12:00:00', 'refund-' . $refund]);
 $ledger = $app->rows('SELECT gross,commission FROM ledger WHERE merchant_order_id=? ORDER BY id', [$northOrder]);
 same([[10800,1080],[-10800,-1080]], array_map(static fn(array $row): array => array_map('intval', array_values($row)), $ledger),
     'gross and commission reversals balance');
-denied(fn() => $app->settle($buyer, $pondShop), 'settlement authorization');
-$northBatch = $app->settle($finance, $northShop);
-$pondBatch = $app->settle($finance, $pondShop);
+denied(fn() => $app->previewSettlement($buyer, $pondShop, $openingPeriod, 'CNY'), 'settlement authorization');
+denied(fn() => $app->previewSettlement($finance, $pondShop, '2026-15', 'CNY'), 'invalid calendar month rejected');
+denied(fn() => $app->previewSettlement($finance, $pondShop, $openingPeriod, 'USD'), 'currency must match ledger');
+denied(fn() => $app->freezeSettlement($finance, $northShop, $openingPeriod, 'CNY', $staleSettlement['hash']),
+    'newly posted refund invalidates the earlier preview');
+$northPreview = $app->previewSettlement($finance, $northShop, $openingPeriod, 'CNY');
+$pondPreview = $app->previewSettlement($finance, $pondShop, $openingPeriod, 'CNY');
+same([10800, 10800, 0, 0, 2], [$northPreview['sales'], $northPreview['refunds'], $northPreview['commission'],
+    $northPreview['net'], $northPreview['entries']], 'net zero statement separately reports the returned sale');
+same([7200, 0, 720, 6480], [$pondPreview['sales'], $pondPreview['refunds'], $pondPreview['commission'], $pondPreview['net']],
+    'another merchant preview excludes the returned sale');
+denied(fn() => $app->freezeSettlement($admin, $pondShop, $openingPeriod, 'CNY', $pondPreview['hash']), 'operations cannot freeze');
+$freeze = static fn(int $actor, int $shop, string $month, array $preview): int =>
+    $app->freezeSettlement($actor, $shop, $month, 'CNY', $preview['hash']);
+$northBatch = $freeze($finance, $northShop, $openingPeriod, $northPreview);
+$jobs = array_fill(0, 2, [$finance, $pondShop, $openingPeriod, $pondPreview['hash']]);
+$frozen = compete('settlement-worker', $jobs);
+$pondBatch = (int) substr($frozen[0], strlen('frozen-'));
+same(["frozen-$pondBatch", "frozen-$pondBatch"], $frozen, 'concurrent confirmation returns the same frozen statement');
 same([0, 6480], array_map('intval', array_column($app->rows('SELECT amount FROM settlements WHERE id IN (?,?) ORDER BY id',
     [$northBatch, $pondBatch]), 'amount')), 'finance settlement matches PRD example');
-denied(fn() => $app->settle($finance, $pondShop), 'settlement entries cannot be booked twice');
+same($pondBatch, $freeze($finance, $pondShop, $openingPeriod, $pondPreview), 'identical submission returns the frozen statement');
+denied(fn() => $app->freezeSettlement($finance, $pondShop, $openingPeriod, 'CNY', str_repeat('0', 64)), 'closed month rejects a changed snapshot');
+denied(fn() => $app->settlementDetail($payout, $pondBatch), 'cashier queue excludes statements pending review');
+denied(fn() => $app->recordSettlementTransfer($payout, $pondBatch, "bank-$tag", 6480), 'cashier cannot pay an unreviewed statement');
+denied(fn() => $app->reviewSettlement($payout, $pondBatch, 6480), 'cashier cannot review a statement');
+denied(fn() => $app->reviewSettlement($finance, $pondBatch, 6481), 'review must reconcile the exact amount');
+$app->reviewSettlement($finance, $northBatch, 0);
+same('cleared', $app->settlementDetail($finance, $northBatch)['state'], 'zero statement clears without a bank transfer');
+$app->reviewSettlement($finance, $pondBatch, 6480);
+same([$pondBatch], array_map('intval', array_column($app->settlementList($payout, $pondShop), 'id')), 'cashier sees reviewed positive statements');
+denied(fn() => $app->recordSettlementTransfer($finance, $pondBatch, "bank-$tag", 6480), 'finance cannot register a bank transfer');
+denied(fn() => $app->recordSettlementTransfer($payout, $pondBatch, "bank-$tag", 6479), 'bank transfer must match reviewed amount');
+$app->recordSettlementTransfer($payout, $pondBatch, "bank-$tag", 6480);
+$app->recordSettlementTransfer($payout, $pondBatch, "bank-$tag", 6480);
+denied(fn() => $app->recordSettlementTransfer($payout, $pondBatch, "another-bank-$tag", 6480), 'bank receipt cannot be overwritten');
+$pondStatement = $app->settlementDetail($financeStaff, $pondBatch);
+same(['paid', $finance, $payout, 6480], [$pondStatement['state'], (int) $pondStatement['reviewed_by'],
+    (int) $pondStatement['paid_by'], (int) $pondStatement['amount']], 'statement preserves both operators and approved amount');
+$pondCsv = iterator_to_array($app->exportSettlement($financeStaff, $pondBatch), false);
+same([$pondShop, $openingPeriod, $pondBatch, 'sale', 'CNY', 7200, 720, 6480], [
+    (int) $pondCsv[1][0], $pondCsv[1][1], (int) $pondCsv[1][2], $pondCsv[1][6], $pondCsv[1][7],
+    (int) $pondCsv[1][8], (int) $pondCsv[1][9], $pondCsv[1][10]], 'CSV identifies shop, month, source and amount in cents');
+denied(fn() => iterator_to_array($app->exportSettlement($north, $pondBatch)), 'merchant cannot export another shop statement');
+denied(fn() => iterator_to_array($app->exportSettlement($payout, $pondBatch)), 'cashier cannot export source orders');
 same([$northOrder, $northOrder], array_map('intval', array_column($app->merchantLedger($north), 'merchant_order_id')),
     'shop A statement contains only its shop orders while suspended');
 same([$pondOrder], array_map('intval', array_column($app->merchantLedger($financeStaff), 'merchant_order_id')),
     'shop B statement contains only its shop orders');
 denied(fn() => $app->merchantLedger($catalogStaff), 'product staff cannot read financial records');
-denied(fn() => $app->settle($financeStaff, $pondShop), 'shop finance cannot book a settlement batch');
+denied(fn() => $freeze($financeStaff, $pondShop, $openingPeriod, $pondPreview), 'shop finance cannot freeze a settlement');
 $app->setShopSuspended($admin, $northShop, false, '盘点完成');
 same($a, (int) $app->catalog("N-$tag")[0]['id'], 'resumed shop returns to sales');
 
@@ -457,7 +520,10 @@ same([['kind' => 'sale', 'gross' => $multiPaidQuote['total']]], $deliveryLedger(
 same([1, 1, 1], array_map('intval', array_column($app->shipments($deliveryOrder), 'units')), 'one shipment row per parcel');
 same([[$main, 0, 0], [$east, 0, 0]], $multiBalance(), 'shipping does not deduct paid stock again');
 
-$deliveryBatch = $app->settle($finance, $northShop);
+$postDate->execute([$deliveryPeriod . '-11 12:00:00', $deliveryOrder]);
+$deliveryPreview = $app->previewSettlement($finance, $northShop, $deliveryPeriod, 'CNY');
+same((int) $multiPaidQuote['total'], $deliveryPreview['sales'], 'new period freezes only sales posted before its cutoff');
+$deliveryBatch = $freeze($finance, $northShop, $deliveryPeriod, $deliveryPreview);
 $batchSnapshot = static fn(): array => $app->rows('SELECT s.*,l.gross,l.commission FROM settlements s
     JOIN ledger l ON l.settlement_id=s.id WHERE s.id=? ORDER BY l.id', [$deliveryBatch]);
 $settledBeforeReturn = $batchSnapshot();
@@ -493,7 +559,9 @@ same(3, (int) $app->rows('SELECT refunded_quantity FROM order_items WHERE id=?',
 same($settledBeforeReturn, $batchSnapshot(), 'late refund leaves the historical batch and its sale unchanged');
 same([-3259, 2], array_map('intval', array_values($app->rows('SELECT SUM(gross-commission),COUNT(*) FROM ledger
     WHERE merchant_order_id=? AND settlement_id IS NULL', [$deliveryOrder])[0])), 'refund and commission carry forward, excluding freight');
-denied(fn() => $app->settle($finance, $northShop), 'negative net from a settled sale rolls into the next batch');
+$carry = $app->previewSettlement($finance, $northShop, $currentPeriod, 'CNY');
+same([-3259, 3621, -362], [$carry['net'], $carry['refunds'], $carry['commission']], 'current month picks up prior period reversal');
+denied(fn() => $freeze($finance, $northShop, $currentPeriod, $carry), 'negative net from a settled sale rolls into the next batch');
 
 $eastPickup = $app->savePickupLocation($north, 0, $east, 'EAST', '东区自提门店', '东区 10 号', true);
 $eastStaff = $app->addShopMember($north, "north-east-$tag@example.test", $pw, 'pickup', $eastPickup);
@@ -711,6 +779,16 @@ $endingBatch = $app->createPreorder($north, $preSku, $east, 'ENDING', 2, $cutoff
 $endingQuote = $app->quote($buyer, [$preSku => 1], 'web', '预约地址', preorders: [$preSku => $endingBatch]);
 $db->prepare('UPDATE preorder_batches SET closes_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=?')->execute([$endingBatch]);
 denied(fn() => $app->place($buyer, $endingQuote['token']), 'batch expiry prevents consuming an old quote');
+
+$nextPreview = $app->previewSettlement($finance, $northShop, $currentPeriod, 'CNY');
+same(null, $nextPreview['blocked'], 'later sales offset the carried refunds');
+$nextBatch = $freeze($finance, $northShop, $currentPeriod, $nextPreview);
+same(2, count($app->rows("SELECT id FROM ledger WHERE merchant_order_id=? AND kind='refund' AND settlement_id=?",
+    [$deliveryOrder, $nextBatch])), 'next statement freezes both late refunds');
+same($settledBeforeReturn, $batchSnapshot(), 'opening the next statement never modifies the previous report');
+$app->reviewSettlement($finance, $nextBatch, $nextPreview['net']);
+denied(fn() => $app->recordSettlementTransfer($payout, $nextBatch, "bank-$tag", $nextPreview['net']),
+    'bank receipt cannot be reused on another settlement');
 
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');

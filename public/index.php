@@ -65,7 +65,8 @@ function e(string|int|null $value): string
 function cash(string|int|null $cents): string
 {
     $num = (int) $cents;
-    return ($num < 0 ? '−' : '') . '¥' . number_format(abs($num) / 100, 2, '.', ',');
+    $whole = preg_replace('/\B(?=(\d{3})+(?!\d))/', ',', (string) abs(intdiv($num, 100)));
+    return ($num < 0 ? '−' : '') . '¥' . $whole . '.' . str_pad((string) abs($num % 100), 2, '0', STR_PAD_LEFT);
 }
 
 function field(string $name, string|int $value): string
@@ -89,6 +90,8 @@ function badge(string $status): string
         'cancelled' => '已取消', 'approved' => '已退款',
         'return_authorized' => '待寄回', 'return_in_transit' => '待验收',
         'refund_pending' => '待渠道退款', 'refunded' => '已退款',
+        'legacy' => '历史批次', 'review_pending' => '待复核', 'payable' => '待打款',
+        'cleared' => '零额结清', 'transfer_paid' => '已登记打款',
     ];
     return '<span class="badge ' . e($status) . '">' . e($labels[$status] ?? $status) . '</span>';
 }
@@ -114,9 +117,11 @@ try {
         $next = match ($role) {
             'merchant' => 'merchant',
             'admin', 'finance' => 'platform',
+            'payout' => 'settlements',
             'buyer' => 'orders',
             default => 'account',
         };
+        $nextParams = [];
         try {
             if (!hash_equals($_SESSION['csrf'], input('csrf'))) {
                 throw new RuleViolation('表单已失效，请刷新后重试。');
@@ -344,9 +349,35 @@ try {
                 case 'return_inspect':
                     $app->inspectReturn($id, number('refund'), number('accepted', 0, 99), number('restocked', 0, 99), input('note'));
                     break;
-                case 'settle':
-                    $app->settle($id, number('shop'));
+                case 'review_legacy_payee':
+                    $decision = input('decision');
+                    if (!in_array($decision, ['approve', 'reject'], true)) {
+                        throw new RuleViolation('请选择收款主体核验结果。');
+                    }
+                    $app->reviewLegacyPayee($id, number('shop'), input('payee'), $decision === 'approve');
                     break;
+                case 'settlement_freeze':
+                    $next = 'settlements';
+                    $shop = number('shop');
+                    $period = input('period');
+                    $nextParams = ['shop' => $shop, 'period' => $period];
+                    $batch = $app->freezeSettlement($id, $shop, $period, input('currency'), input('preview_hash'));
+                    $_SESSION['notice'] = '结算单已冻结。';
+                    redirect('settlements', ['batch' => $batch]);
+                case 'settlement_review':
+                    $next = 'settlements';
+                    $batch = number('batch');
+                    $nextParams = ['batch' => $batch];
+                    $app->reviewSettlement($id, $batch, number('verified_amount', 0));
+                    $_SESSION['notice'] = '复核已保存。';
+                    redirect('settlements', ['batch' => $batch]);
+                case 'settlement_transfer':
+                    $next = 'settlements';
+                    $batch = number('batch');
+                    $nextParams = ['batch' => $batch];
+                    $app->recordSettlementTransfer($id, $batch, input('reference'), number('transfer_amount'));
+                    $_SESSION['notice'] = '打款流水已登记。';
+                    redirect('settlements', ['batch' => $batch]);
                 case 'sandbox_refund':
                     $app->recordSandboxRefund($id, number('receipt'), input('reference'));
                     break;
@@ -357,7 +388,7 @@ try {
         } catch (RuleViolation $error) {
             $_SESSION['failure'] = $error->getMessage();
         }
-        redirect($next);
+        redirect($next, $nextParams);
     }
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
@@ -367,10 +398,36 @@ try {
     }
     $page = is_string($_GET['page'] ?? null) ? $_GET['page'] : 'home';
     $scope = [
-        'home' => ['guest', 'buyer', 'merchant', 'admin', 'finance'],
-        'account' => ['guest', 'buyer', 'merchant', 'admin', 'finance'],
+        'home' => ['guest', 'buyer', 'merchant', 'admin', 'finance', 'payout'],
+        'account' => ['guest', 'buyer', 'merchant', 'admin', 'finance', 'payout'],
         'cart' => ['buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
+        'settlements' => ['admin', 'finance', 'merchant', 'payout'],
     ];
+    if ($page === 'settlements' && ($_GET['download'] ?? '') === 'csv') {
+        $batch = filter_var($_GET['batch'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$batch) {
+            http_response_code(400);
+            exit('结算单编号无效。');
+        }
+        try {
+            $csv = $app->exportSettlement($id, $batch);
+            $csv->rewind();
+        } catch (RuleViolation $error) {
+            http_response_code(403);
+            exit(e($error->getMessage()));
+        }
+        session_write_close();
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="settlement-' . $batch . '.csv"');
+        if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+            $output = fopen('php://output', 'wb');
+            foreach ($csv as $row) {
+                fputcsv($output, $row, ',', '"', '');
+            }
+            fclose($output);
+        }
+        exit;
+    }
     if (!isset($scope[$page])) {
         http_response_code(404);
         $page = 'home';

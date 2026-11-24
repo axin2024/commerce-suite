@@ -19,6 +19,9 @@
                 <a href="/?page=merchant">商家中心</a>
             <?php elseif ($role === 'admin' || $role === 'finance'): ?>
                 <a href="/?page=platform">平台运营</a>
+                <a href="/?page=settlements">结算中心</a>
+            <?php elseif ($role === 'payout'): ?>
+                <a href="/?page=settlements">打款登记</a>
             <?php endif; ?>
             <a href="/?page=account"><?= $user ? '账号' : '登录 / 注册' ?></a>
         </div>

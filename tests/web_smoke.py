@@ -1,8 +1,9 @@
 """Exercise the web flow against a freshly seeded local demo."""
 
-import http.cookiejar
+import csv
 import hashlib
 import hmac
+import http.cookiejar
 import json
 import os
 import re
@@ -80,8 +81,8 @@ def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.p
             return error.code, json.load(error)
 
 
-buyer, north, pond, finance, admin = (Session() for _ in range(5))
-for session, role in zip((buyer, north, pond, finance, admin), ("buyer", "north", "pond", "finance", "admin")):
+buyer, north, pond, finance, admin, payout = (Session() for _ in range(6))
+for session, role in zip((buyer, north, pond, finance, admin, payout), ("buyer", "north", "pond", "finance", "admin", "payout")):
     session.login(role)
 assert "审计记录" in admin.load("/?page=platform")
 assert "审计记录" not in finance.load("/?page=platform")
@@ -210,10 +211,45 @@ if REFUND_SECRET:
     assert refund_payload["reference"] in buyer.load("/?page=orders")
     settlement = finance.load("/?page=platform")
     assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80" in settlement
-    assert "生成结算批次" in settlement
-    shop_id = extract(settlement, "shop")
-    finance.submit("/?page=platform", "settle", shop=shop_id)
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    pond_shop = re.search(r'page=platform&amp;shop=(\d+)#ledger">池畔工房</a>', settlement)[1]
+    preview_page = f"/?page=settlements&shop={pond_shop}&period={month}"
+    preview = finance.load(preview_page)
+    assert "结算预览" in preview and "¥72.00" in preview and "¥7.20" in preview and "¥64.80" in preview
+    freeze_form, = forms(preview, "settlement_freeze")
+    frozen = finance.submit(preview_page, "settlement_freeze", shop=pond_shop, period=month, currency="CNY",
+                            preview_hash=extract(freeze_form, "preview_hash"))
+    assert "待复核" in frozen and "冻结分录" in frozen
+    batch = extract(frozen, "batch")
+    detail_path = f"/?page=settlements&batch={batch}"
+    csv_path = f"{detail_path}&download=csv"
+
+    def assert_forbidden(actor, path):
+        try:
+            actor.load(path)
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        else:
+            raise AssertionError("unexpected access to " + path)
+
+    assert_forbidden(payout, detail_path)
+    assert_forbidden(north, csv_path)
+    assert_forbidden(payout, csv_path)
+    assert "复核金额不符" in finance.submit(detail_path, "settlement_review", batch=batch, verified_amount=6481)
+    assert "待打款" in finance.submit(detail_path, "settlement_review", batch=batch, verified_amount=6480)
+    payout_view = payout.load(detail_path)
+    assert "待打款" in payout_view and "下载 CSV" not in payout_view and "冻结分录" not in payout_view
+    bank_reference = f"bank-{uuid4().hex}"
+    paid_settlement = payout.submit(detail_path, "settlement_transfer", batch=batch, reference=bank_reference,
+                                    transfer_amount=6480)
+    assert "已登记打款" in paid_settlement and bank_reference in paid_settlement
+    assert bank_reference in pond.load(detail_path)
+    csv_rows = list(csv.DictReader(pond.load(csv_path).splitlines()))
+    row, = csv_rows
+    assert row["shop_id"] == pond_shop and row["period_utc"] == month and row["currency"] == "CNY"
+    assert (row["gross_minor"], row["commission_minor"], row["net_minor"]) == ("7200", "720", "6480")
     print("Return refund web flow passed: review, parcel tracking, inspection, signed receipt, and settlement.")
+    print("Settlement web flow passed: monthly preview, finance review, cashier record, role scope, and CSV export.")
 print("Web flow passed: login, shared cart, checkout, payment, store pickup, and repeat scan.")
 
 suffix = uuid4().hex[:8]

@@ -9,6 +9,7 @@ require_once __DIR__ . '/PreorderOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
 require_once __DIR__ . '/ReturnOperations.php';
+require_once __DIR__ . '/SettlementOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -21,6 +22,7 @@ final class Commerce
     use PromotionOperations;
     use ShippingOperations;
     use ReturnOperations;
+    use SettlementOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -187,8 +189,8 @@ final class Commerce
 
     public function provisionOperator(string $email, string $password, string $role): int
     {
-        if (!in_array($role, ['admin', 'finance'], true)) {
-            throw new RuleViolation('运营角色须为 admin 或 finance。');
+        if (!in_array($role, ['admin', 'finance', 'payout'], true)) {
+            throw new RuleViolation('运营角色须为 admin、finance 或 payout。');
         }
         return $this->insert('INSERT INTO users (email,password_hash,role) VALUES (?,?,?)',
             [self::validateAccount($email, $password), password_hash($password, PASSWORD_DEFAULT), $role]);
@@ -220,13 +222,42 @@ final class Commerce
         }
         $this->transaction(function () use ($owner, $payee): void {
             $actor = $this->shopActor($owner, 'owner');
-            $shop = $this->one('SELECT status FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
+            $shop = $this->one('SELECT status,payee_name,agreement_version,legacy_payee_request FROM shops WHERE id=? FOR UPDATE',
+                [$actor['shop_id']]);
+            if (in_array($shop['status'], ['active', 'suspended'], true)
+                && $shop['payee_name'] === null && $shop['agreement_version'] === null) {
+                if ($shop['legacy_payee_request'] !== $payee) {
+                    $this->query('UPDATE shops SET legacy_payee_request=? WHERE id=?', [$payee, $actor['shop_id']]);
+                    $this->audit($owner, 'shop.legacy_payee_submitted', (int) $actor['shop_id'],
+                        ['payee' => $payee, 'version' => self::AGREEMENT_VERSION]);
+                }
+                return;
+            }
             if (!in_array($shop['status'], ['pending', 'rejected'], true)) {
                 throw new RuleViolation('已审核店铺的收款主体及协议不可直接变更。');
             }
             $this->query("UPDATE shops SET status='pending',payee_name=?,agreement_version=? WHERE id=?",
                 [$payee, self::AGREEMENT_VERSION, $actor['shop_id']]);
             $this->audit($owner, 'shop.agreement_submitted', (int) $actor['shop_id'], ['version' => self::AGREEMENT_VERSION]);
+        });
+    }
+
+    public function reviewLegacyPayee(int $admin, int $shop, string $payee, bool $approve): void
+    {
+        $this->actor($admin, 'admin');
+        $this->transaction(function () use ($admin, $shop, $payee, $approve): void {
+            $row = $this->one("SELECT legacy_payee_request FROM shops WHERE id=? AND status IN ('active','suspended')
+                AND payee_name IS NULL AND agreement_version IS NULL FOR UPDATE", [$shop]);
+            if (!$row || !$row['legacy_payee_request'] || $row['legacy_payee_request'] !== $payee) {
+                throw new RuleViolation('补录申请已变化，请刷新核对。');
+            }
+            if ($approve) {
+                $this->query('UPDATE shops SET payee_name=?,agreement_version=?,legacy_payee_request=NULL WHERE id=?',
+                    [$payee, self::AGREEMENT_VERSION, $shop]);
+            } else {
+                $this->query('UPDATE shops SET legacy_payee_request=NULL WHERE id=?', [$shop]);
+            }
+            $this->audit($admin, 'shop.legacy_payee_reviewed', $shop, ['payee' => $payee, 'approved' => $approve]);
         });
     }
 
@@ -842,25 +873,5 @@ final class Commerce
         $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
             VALUES (?,?,?,'sale',?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
         $this->audit($actor, 'order.fulfilled', $id);
-    }
-
-    public function settle(int $finance, int $shop): int
-    {
-        $this->actor($finance, 'finance', 'admin');
-        return $this->transaction(function () use ($finance, $shop): int {
-            if (!$this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$shop])) {
-                throw new RuleViolation('店铺不存在。');
-            }
-            $total = $this->one('SELECT COUNT(*) AS entry_count,COALESCE(SUM(gross-commission),0) AS net
-                FROM ledger WHERE shop_id=? AND settlement_id IS NULL', [$shop]);
-            if (!(int) $total['entry_count'] || (int) $total['net'] < 0) {
-                throw new RuleViolation('当前没有可结算的分录或净额为负，负余额将继续结转。');
-            }
-            $id = $this->insert('INSERT INTO settlements (shop_id,created_by,amount) VALUES (?,?,?)',
-                [$shop, $finance, $total['net']]);
-            $this->query('UPDATE ledger SET settlement_id=? WHERE shop_id=? AND settlement_id IS NULL', [$id, $shop]);
-            $this->audit($finance, 'settlement.created', $id, ['net' => (int) $total['net']]);
-            return $id;
-        });
     }
 }

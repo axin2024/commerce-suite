@@ -28,6 +28,7 @@ try {
             $password = 'CommerceDemo-2026';
             $admin = $app->provisionOperator('admin@example.test', $password, 'admin');
             $app->provisionOperator('finance@example.test', $password, 'finance');
+            $app->provisionOperator('payout@example.test', $password, 'payout');
             $app->register('buyer@example.test', $password);
             $north = $app->register('north@example.test', $password, '北仓选物', '北仓选物演示商行');
             $pond = $app->register('pond@example.test', $password, '池畔工房', '池畔工房演示商行');
@@ -56,7 +57,7 @@ try {
             echo 'Expired orders released: ', $app->expireOrders(), "\n";
             break;
         default:
-            fwrite(STDERR, "Usage: php bin/commerce.php migrate|seed|expire|operator <admin|finance> <email>\n");
+            fwrite(STDERR, "Usage: php bin/commerce.php migrate|seed|expire|operator <admin|finance|payout> <email>\n");
             exit(2);
     }
 } catch (Throwable $error) {

@@ -1,6 +1,6 @@
 <div class="heading"><h1>账号</h1></div>
 <?php if ($user): ?>
-    <?php $roles = ['buyer' => '买家', 'merchant' => '商家', 'admin' => '平台运营', 'finance' => '财务']; ?>
+    <?php $roles = ['buyer' => '买家', 'merchant' => '商家', 'admin' => '平台运营', 'finance' => '财务', 'payout' => '出纳']; ?>
     <section class="panel"><h2><?= e($user['email']) ?></h2><p><?= e($roles[$role]) ?></p>
         <?php form('logout'); ?><button class="secondary">退出登录</button></form>
     </section>

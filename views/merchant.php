@@ -27,9 +27,11 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
     <h2>入驻资料</h2>
     <?php if ($canOperate): ?>
         <p>收款主体 <?= e($shop['payee_name'] ?? '旧版入驻记录未登记') ?> · 协议 <?= e($shop['agreement_version'] ?? '旧版未登记') ?></p>
-    <?php else: ?>
+        <?php if ($shop['legacy_payee_request']): ?><p>待平台核验 <?= e($shop['legacy_payee_request']) ?></p><?php endif; ?>
+    <?php endif; ?>
+    <?php if (!$canOperate || ($shop['payee_name'] === null && $shop['agreement_version'] === null)): ?>
         <?php form('shop_agreement'); ?>
-        <label>收款主体名称<input name="payee" value="<?= e($shop['payee_name']) ?>" maxlength="160" required></label>
+        <label>收款主体名称<input name="payee" value="<?= e($shop['legacy_payee_request'] ?? $shop['payee_name']) ?>" maxlength="160" required></label>
         <p>结算协议 <?= e(Commerce::AGREEMENT_VERSION) ?> · 按履约订单净额入账，平台按约定费率收取佣金，退款与对应佣金按原单冲回。</p>
         <button>确认协议并提交审核</button></form>
     <?php endif; ?>
@@ -121,7 +123,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 <?php if ($canSupport || $canFulfill) { require __DIR__ . '/return_workbench.php'; } ?>
 <?php if ($canFinance): ?>
 <section class="panel" id="finance">
-    <h2>本店账单</h2>
+    <div class="heading"><h2>本店账单</h2><a href="/?page=settlements">结算单与导出</a></div>
     <?php $entries = $app->merchantLedger((int) $user['id']); ?>
     <?php if (!$entries): ?><p class="muted">暂无结算分录。</p><?php else: ?>
         <div class="table-wrap"><table>
@@ -129,7 +131,10 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
             <tbody><?php foreach ($entries as $entry): ?>
                 <tr><td>#<?= e($entry['merchant_order_id']) ?></td><td><?= $entry['kind'] === 'sale' ? '销售' : '退款冲正' ?></td>
                     <td><?= cash($entry['gross']) ?></td><td><?= cash($entry['commission']) ?></td>
-                    <td><?= cash($entry['gross'] - $entry['commission']) ?></td><td><?= e($entry['settlement_id'] ?? '待结算') ?></td></tr>
+                    <td><?= cash($entry['gross'] - $entry['commission']) ?></td>
+                    <td><?php if ($entry['settlement_id']): ?>
+                        <a href="/?page=settlements&amp;batch=<?= e($entry['settlement_id']) ?>">#<?= e($entry['settlement_id']) ?></a>
+                    <?php else: ?>待结算<?php endif; ?></td></tr>
             <?php endforeach; ?></tbody>
         </table></div>
     <?php endif; ?>
