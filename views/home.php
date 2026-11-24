@@ -1,6 +1,8 @@
 <?php
 $search = is_string($_GET['q'] ?? null) && strlen($_GET['q']) <= 150 ? $_GET['q'] : '';
-$products = $app->catalog($search);
+$categoryFilter = filter_var($_GET['category'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null;
+$channelFilter = in_array($_GET['channel'] ?? '', ['web', 'store'], true) ? $_GET['channel'] : '';
+$products = $app->catalog($search, $categoryFilter, $channelFilter);
 ?>
 <section class="hero">
     <div>
@@ -13,7 +15,18 @@ $products = $app->catalog($search);
     <div class="heading">
         <h2>商品目录</h2>
         <form class="search" method="get" action="/">
-            <input aria-label="搜索商品名称或 SKU" name="q" value="<?= e($search) ?>" maxlength="100" placeholder="商品名称或 SKU">
+            <input aria-label="搜索商品名称、规格或 SKU" name="q" value="<?= e($search) ?>" maxlength="100" placeholder="商品名称、规格或 SKU">
+            <select aria-label="商品分类" name="category">
+                <option value="">全部分类</option>
+                <?php foreach ($app->categories() as $category): ?>
+                    <option value="<?= e($category['id']) ?>"<?= $categoryFilter === (int) $category['id'] ? ' selected' : '' ?>><?= e($category['name']) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <select aria-label="销售渠道" name="channel">
+                <option value="">全部渠道</option>
+                <option value="web"<?= $channelFilter === 'web' ? ' selected' : '' ?>>配送</option>
+                <option value="store"<?= $channelFilter === 'store' ? ' selected' : '' ?>>门店自提</option>
+            </select>
             <button class="secondary">搜索</button>
         </form>
     </div>
@@ -23,6 +36,8 @@ $products = $app->catalog($search);
             <article class="product">
                 <p class="muted"><?= e($p['shop_name']) ?> <span class="sku"><?= e($p['sku']) ?></span></p>
                 <h3><?= e($p['name']) ?></h3>
+                <p class="muted"><?= e(implode(' · ', array_filter([$p['category_name'], $p['family_name'], $p['color'], $p['size']]))) ?></p>
+                <p class="muted"><?= e(implode('、', array_filter([$p['delivery'] ? '配送' : '', $p['pickup'] ? '门店自提' : '']))) ?></p>
                 <div class="product-price"><strong><?= cash($p['price']) ?></strong><span>可售 <?= $available ?></span></div>
                 <?php if ($role === 'buyer' && $available): ?>
                     <?php form('cart'); echo field('product', $p['id']); ?>

@@ -34,10 +34,17 @@ try {
             foreach ([$north, $pond] as $merchant) {
                 $app->reviewShop($admin, (int) $app->profile($merchant)['shop_id'], true);
             }
-            $app->saveProduct($north, 0, 'NORTH-01', '山形帆布托特包', 12000, 36, 'active');
-            $app->saveProduct($pond, 0, 'POND-01', '湖蓝陶瓷早餐杯', 8000, 24, 'active');
-            $app->saveProduct($north, 0, 'NORTH-02', '烟灰折叠收纳盒', 6800, 12, 'active');
-            $app->saveProduct($pond, 0, 'POND-02', '手工亚麻餐垫', 5200, 18, 'active');
+            $bags = $app->createCategory($admin, '箱包');
+            $home = $app->createCategory($admin, '家居');
+            foreach ([
+                [$north, 'NORTH-01', '山形帆布托特包', 12000, 36, $bags, '山形帆布包', '砖红', 'M'],
+                [$pond, 'POND-01', '湖蓝陶瓷早餐杯', 8000, 24, $home, '池畔瓷器', '湖蓝', '300ml'],
+                [$north, 'NORTH-02', '烟灰折叠收纳盒', 6800, 12, $home, '折叠收纳盒', '烟灰', 'S'],
+                [$pond, 'POND-02', '手工亚麻餐垫', 5200, 18, $home, '亚麻餐垫', '原麻', 'M'],
+            ] as [$merchant, $sku, $name, $price, $stock, $category, $family, $color, $size]) {
+                $release = $app->submitSku($merchant, 0, $sku, $name, $price, $stock, $category, $family, $color, $size, true, true);
+                $app->reviewSku($admin, $release, true);
+            }
             echo "Demo accounts and catalog created. See README.\n";
             break;
         case 'expire':

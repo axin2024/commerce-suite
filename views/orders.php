@@ -30,12 +30,14 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                 <div class="heading"><h3><?= e($merchantOrder['name']) ?> <?= badge($merchantOrder['status']) ?></h3>
                     <strong><?= cash($merchantOrder['total']) ?></strong></div>
                 <?php if ($merchantOrder['tracking']): ?><p class="muted">履约单号 <?= e($merchantOrder['tracking']) ?></p><?php endif; ?>
-                <?php foreach ($app->rows('SELECT i.*,
+                <?php foreach ($app->rows('SELECT i.*,r.color,r.size,
                     (SELECT COALESCE(SUM(r.quantity),0) FROM refunds r WHERE r.item_id=i.id AND r.status=\'pending\') AS pending_qty
-                    FROM order_items i WHERE i.merchant_order_id=? ORDER BY i.id', [$merchantOrder['id']]) as $item):
+                    FROM order_items i LEFT JOIN product_releases r ON r.id=i.product_release_id
+                    WHERE i.merchant_order_id=? ORDER BY i.id', [$merchantOrder['id']]) as $item):
                     $remaining = (int) $item['quantity'] - (int) $item['refunded_quantity'] - (int) $item['pending_qty']; ?>
                     <div class="record">
                         <div><?= e($item['name']) ?> × <?= e($item['quantity']) ?>
+                            <div class="muted"><?= e($item['sku']) ?> <?= e(trim((string) $item['color'] . ' ' . (string) $item['size'])) ?></div>
                             <div class="muted">实付 <?= cash($item['quantity'] * $item['unit_price'] - $item['discount']) ?> · 已退 <?= e($item['refunded_quantity']) ?></div></div>
                         <?php if ($merchantOrder['status'] === 'fulfilled' && $remaining > 0): ?>
                             <details><summary>申请退款</summary>

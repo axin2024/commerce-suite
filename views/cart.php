@@ -8,7 +8,8 @@
             <?php foreach ($cartLines as $line): ?>
                 <div class="record">
                     <div><strong><?= e($line['name']) ?></strong>
-                        <div class="muted"><?= e($line['shop_name']) ?> · <?= cash($line['price']) ?></div>
+                        <div class="muted"><?= e($line['shop_name']) ?> · <?= e($line['sku']) ?>
+                            <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?> · <?= cash($line['price']) ?></div>
                         <?php if (!$line['on_sale'] || $line['available'] < $line['quantity']): ?>
                             <div class="muted"><?= $line['on_sale'] ? '可用库存不足' : '暂停销售' ?></div>
                         <?php endif; ?>

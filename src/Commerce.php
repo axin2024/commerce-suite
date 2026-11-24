@@ -2,10 +2,14 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/CatalogOperations.php';
+
 final class RuleViolation extends RuntimeException {}
 
 final class Commerce
 {
+    use CatalogOperations;
+
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
         'catalog' => '商品运营',
@@ -280,64 +284,14 @@ final class Commerce
             FROM ledger WHERE shop_id=? ORDER BY id DESC LIMIT 100', [$actor['shop_id']]);
     }
 
-    public function saveProduct(
-        int $merchant, int $id, string $sku, string $name, int $price, int $stock, string $status, ?int $version = null,
-    ): int
-    {
-        $sku = trim($sku);
-        $name = trim($name);
-        if (!preg_match('/^[a-z0-9_-]{1,64}$/iD', $sku) || $name === '' || strlen($name) > 160
-            || $price < 1 || $price > 100_000_000 || $stock < 0 || $stock > 1_000_000_000
-            || !in_array($status, ['draft', 'active', 'archived'], true)) {
-            throw new RuleViolation('请检查 SKU、名称、价格、库存和商品状态。');
-        }
-        try {
-            return $this->transaction(function () use ($merchant, $id, $sku, $name, $price, $stock, $status, $version): int {
-                $actor = $this->shopActor($merchant, 'catalog');
-                $shop = $this->one('SELECT status FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
-                if (!$shop || !in_array($shop['status'], ['active', 'suspended'], true)) {
-                    throw new RuleViolation('店铺通过审核后可维护商品。');
-                }
-                if ($id) {
-                    $previous = $this->one('SELECT reserved,version FROM products WHERE id=? AND shop_id=? FOR UPDATE',
-                        [$id, $actor['shop_id']]);
-                    if (!$previous || $stock < (int) $previous['reserved']) {
-                        throw new RuleViolation('商品不存在，或库存低于已预留数量。');
-                    }
-                    if ($version !== null && $version !== (int) $previous['version']) {
-                        throw new RuleViolation('商品或库存已更新，请重新打开表单。');
-                    }
-                    $this->query('UPDATE products SET sku=?,name=?,price=?,stock=?,status=?,version=version+1 WHERE id=?',
-                        [$sku, $name, $price, $stock, $status, $id]);
-                } else {
-                    $id = $this->insert('INSERT INTO products (shop_id,sku,name,price,stock,status) VALUES (?,?,?,?,?,?)',
-                        [$actor['shop_id'], $sku, $name, $price, $stock, $status]);
-                }
-                $this->audit($merchant, 'product.saved', $id, ['stock' => $stock, 'status' => $status]);
-                return $id;
-            });
-        } catch (PDOException $error) {
-            if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
-                throw new RuleViolation('店铺内已存在该 SKU。');
-            }
-            throw $error;
-        }
-    }
-
-    public function catalog(string $search = ''): array
-    {
-        $pattern = '%' . strtr(trim($search), ['!' => '!!', '%' => '!%', '_' => '!_']) . '%';
-        return $this->rows("SELECT p.*,s.name AS shop_name FROM products p JOIN shops s ON s.id=p.shop_id
-            WHERE p.status='active' AND s.status='active' AND (p.name LIKE ? ESCAPE '!' OR p.sku LIKE ? ESCAPE '!')
-            ORDER BY p.id DESC LIMIT 100", [$pattern, $pattern]);
-    }
-
     public function cartLines(int $buyer): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,s.name AS shop_name,
+        return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,
+            r.color,r.size,s.name AS shop_name,
             p.stock-p.reserved AS available,(p.status='active' AND s.status='active') AS on_sale
             FROM cart_lines c JOIN products p ON p.id=c.product_id JOIN shops s ON s.id=p.shop_id
+            LEFT JOIN product_releases r ON r.id=p.release_id
             WHERE c.buyer_id=? ORDER BY c.product_id", [$buyer]);
     }
 
@@ -442,19 +396,26 @@ final class Commerce
             if (!is_int($id) || $id < 1 || !is_int($quantity) || $quantity < 1 || $quantity > 99) {
                 throw new RuleViolation('每种 SKU 的购买数量须为 1–99。');
             }
-            $product = $this->one("SELECT * FROM products WHERE id=? AND status='active'"
+            $product = $this->one("SELECT p.id,p.shop_id,p.sku,p.name,p.price,p.stock,p.reserved,p.release_id,r.delivery,r.pickup
+                FROM products p JOIN product_releases r ON r.id=p.release_id WHERE p.id=? AND p.status='active'"
                 . ($lock ? ' FOR UPDATE' : ''), [$id]);
             $shop = $product ? $this->one("SELECT id,commission_bps FROM shops WHERE id=? AND status='active'"
                 . ($lock ? ' FOR UPDATE' : ''),
                 [$product['shop_id']]) : null;
-            if (!$shop || (int) $product['stock'] - (int) $product['reserved'] < $quantity) {
-                throw new RuleViolation('商品已下架或可用库存不足，请更新购物车。');
+            if (!$shop) {
+                throw new RuleViolation('商品已下架或店铺已停业，请更新购物车。');
+            }
+            if (!$product[$channel === 'web' ? 'delivery' : 'pickup']) {
+                throw new RuleViolation('有商品不支持当前履约方式，请调整商品或渠道。');
+            }
+            if ((int) $product['stock'] - (int) $product['reserved'] < $quantity) {
+                throw new RuleViolation('商品可用库存不足，请调整购买数量。');
             }
             $shopId = (int) $shop['id'];
             $price = (int) $product['price'];
             $weights[$id] = $price * $quantity;
             $items[$id] = [
-                'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'],
+                'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'], 'release_id' => (int) $product['release_id'],
                 'quantity' => $quantity, 'unit_price' => $price, 'fee_bps' => (int) $shop['commission_bps'],
             ];
             $shops[$shopId] = ['shipping' => $channel === 'web' ? 800 : 0, 'total' => 0];
@@ -568,9 +529,10 @@ final class Commerce
             foreach ($current['items'] as $product => $item) {
                 $this->query('UPDATE products SET reserved=reserved+?,version=version+1 WHERE id=?', [$item['quantity'], $product]);
                 $this->query('INSERT INTO order_items
-                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission) VALUES (?,?,?,?,?,?,?,?)',
+                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id)
+                    VALUES (?,?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
-                        $item['unit_price'], $item['discount'], $item['commission']]);
+                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id']]);
             }
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);

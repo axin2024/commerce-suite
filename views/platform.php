@@ -11,6 +11,7 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
 <div class="heading"><h1>平台运营</h1></div>
 <div class="tabs">
     <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="#batches">结算批次</a>
+    <?php if ($role === 'admin'): ?><a href="#catalog-review">商品审核</a><?php endif; ?>
     <?php if (demoEnabled()): ?><a href="#receipts">沙箱支付回执</a><?php endif; ?>
     <?php if ($role === 'admin'): ?><a href="#audit">审计记录</a><?php endif; ?>
 </div>
@@ -111,6 +112,7 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
 </section>
 <?php endif; ?>
 <?php if ($role === 'admin'): ?>
+    <?php require __DIR__ . '/catalog_review.php'; ?>
     <section class="panel" id="audit">
         <h2>审计记录</h2>
         <?php foreach ($app->rows('SELECT a.*,u.email FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 50') as $event): ?>

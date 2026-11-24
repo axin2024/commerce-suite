@@ -57,42 +57,7 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
     <?php endforeach; ?>
 </section>
 <?php endif; ?>
-<?php if ($canCatalog):
-    $inventory = $app->rows('SELECT * FROM products WHERE shop_id=? ORDER BY id DESC LIMIT 100', [$shop['id']]); ?>
-<section class="panel" id="products">
-    <h2>商品与库存</h2>
-    <?php
-    $productForm = static function (array $p): void {
-        form('product');
-        echo field('id', $p['id']), field('version', $p['version']);
-        ?>
-        <div class="inputs">
-            <label>SKU<input name="sku" value="<?= e($p['sku']) ?>" required maxlength="64" pattern="[A-Za-z0-9_\-]+"></label>
-            <label>名称<input name="name" value="<?= e($p['name']) ?>" required maxlength="52"></label>
-            <label>价格（元）<input name="price" value="<?= e($p['price'] === '' ? '' : number_format($p['price'] / 100, 2, '.', '')) ?>" inputmode="decimal" required></label>
-            <label>在库总量<input type="number" name="stock" value="<?= e($p['stock']) ?>" min="<?= e($p['reserved']) ?>" required></label>
-            <label>状态<select name="status">
-                <?php foreach (['draft' => '草稿', 'active' => '上架', 'archived' => '归档'] as $value => $label): ?>
-                    <option value="<?= e($value) ?>"<?= $p['status'] === $value ? ' selected' : '' ?>><?= e($label) ?></option>
-                <?php endforeach; ?>
-            </select></label>
-        </div>
-        <button>保存商品</button></form>
-        <?php
-    };
-    ?>
-    <details><summary>新增商品</summary>
-        <?php $productForm(['id' => 0, 'version' => 0, 'sku' => '', 'name' => '', 'price' => '', 'stock' => 0, 'reserved' => 0, 'status' => 'draft']); ?>
-    </details>
-    <?php foreach ($inventory as $product): ?>
-        <details class="inventory">
-            <summary><?= e($product['name']) ?> · <?= e($product['sku']) ?> · <?= cash($product['price']) ?> · <?= badge($product['status']) ?>
-                <span class="muted">在库 <?= e($product['stock']) ?> / 预留 <?= e($product['reserved']) ?></span></summary>
-            <?php $productForm($product); ?>
-        </details>
-    <?php endforeach; ?>
-</section>
-<?php endif; ?>
+<?php if ($canCatalog) { require __DIR__ . '/catalog_workbench.php'; } ?>
 <?php if ($canFulfill):
     $merchantOrders = $app->rows("SELECT m.*,o.channel,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
         WHERE m.shop_id=? AND m.status IN ('ready','fulfilled') ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
@@ -103,8 +68,10 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
         <div class="record">
             <div><strong>#<?= e($order['id']) ?> · <?= cash($order['total']) ?></strong> <?= badge($order['status']) ?>
                 <p class="muted"><?= $order['channel'] === 'web' ? '配送' : '自提' ?> · <?= e($order['destination']) ?></p>
-                <?php foreach ($app->rows('SELECT name,quantity FROM order_items WHERE merchant_order_id=? ORDER BY id', [$order['id']]) as $line): ?>
-                    <div><?= e($line['name']) ?> × <?= e($line['quantity']) ?></div>
+                <?php foreach ($app->rows('SELECT i.name,i.sku,i.quantity,r.color,r.size FROM order_items i
+                    LEFT JOIN product_releases r ON r.id=i.product_release_id WHERE i.merchant_order_id=? ORDER BY i.id', [$order['id']]) as $line): ?>
+                    <div><?= e($line['name']) ?> × <?= e($line['quantity']) ?>
+                        <span class="muted"><?= e($line['sku']) ?> <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?></span></div>
                 <?php endforeach; ?>
             </div>
             <?php if ($order['status'] === 'ready'): ?>

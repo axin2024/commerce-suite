@@ -57,8 +57,11 @@ $northShop = (int) $app->profile($north)['shop_id'];
 $pondShop = (int) $app->profile($pond)['shop_id'];
 same($buyer, $app->authenticate("buyer-$tag@example.test", $pw), 'buyer login');
 same(null, $app->authenticate("buyer-$tag@example.test", 'wrong'), 'invalid password');
+$bags = $app->createCategory($admin, "箱包-$tag");
+$home = $app->createCategory($admin, "家居-$tag");
+denied(fn() => $app->createCategory($north, "自定义-$tag"), 'merchant cannot create a platform category');
 denied(fn() => $app->reviewShop($finance, $northShop, true), 'finance cannot approve a merchant');
-denied(fn() => $app->saveProduct($north, 0, 'N-1', 'Demo', 12000, 1, 'active'), 'shop approval required');
+denied(fn() => $app->submitSku($north, 0, 'N-1', 'Demo', 12000, 1, $bags, '测试', '', '', true, true), 'shop approval required');
 denied(fn() => $app->reviewShop($admin, $northShop, true), 'approval requires a payee and agreement');
 $app->reviewShop($admin, $northShop, false);
 $app->submitShopAgreement($north, '北仓选物商行');
@@ -89,16 +92,39 @@ denied(fn() => $app->setShopMemberEnabled($north, $north, false), 'owner cannot 
 $app->setShopMemberEnabled($north, $catalogStaff, false);
 same(null, $app->authenticate($catalogEmail, $pw), 'revoked staff cannot sign in');
 same(false, $app->profile($catalogStaff)['enabled'], 'revoked staff session can be invalidated');
-denied(fn() => $app->saveProduct($catalogStaff, 0, "N-$tag", '库存', 12000, 10, 'active'),
+denied(fn() => $app->submitSku($catalogStaff, 0, "N-$tag", '库存', 12000, 10, $bags, '北仓帆布包', '红色', 'M', true, true),
     'revoked staff has no catalog write access');
 $app->setShopMemberEnabled($north, $catalogStaff, true);
-$a = $app->saveProduct($catalogStaff, 0, "N-$tag", '北仓帆布包', 12000, 10, 'active');
-$b = $app->saveProduct($pond, 0, "P-$tag", '池畔早餐杯', 8000, 10, 'active');
-$hidden = $app->saveProduct($north, 0, "D-$tag", '未公开商品', 100, 4, 'draft');
+$redRelease = $app->submitSku($catalogStaff, 0, "N-$tag", '北仓帆布包', 12000, 10, $bags, '北仓帆布包', '红色', 'M', true, true);
+same([], $app->catalog("N-$tag"), 'merchant submission requires review before becoming visible');
+denied(fn() => $app->reviewSku($north, $redRelease, true), 'merchant cannot approve its own SKU release');
+$a = $app->reviewSku($admin, $redRelease, true);
+same($a, $app->reviewSku($admin, $redRelease, true), 'approval replay returns the same SKU');
+$cupRelease = $app->submitSku($pond, 0, "P-$tag", '池畔早餐杯', 8000, 10, $home, '池畔陶瓷', '湖蓝', '300ml', true, true);
+$b = $app->reviewSku($admin, $cupRelease, true);
+$hiddenRelease = $app->submitSku($north, 0, "D-$tag", '未公开商品', 100, 4, $bags, '待审核', '', '', true, true);
+$hidden = (int) $app->rows('SELECT product_id FROM product_releases WHERE id=?', [$hiddenRelease])[0]['product_id'];
 same([], $app->catalog("D-$tag"), 'draft catalog isolation');
 same($a, (int) $app->catalog("N-$tag")[0]['id'], 'SKU search');
-denied(fn() => $app->saveProduct($pond, $a, "N-$tag", '跨店改名', 1, 1, 'active'), 'product ownership');
+same([], $app->catalog("N-$tag", $home), 'category filter excludes products in other categories');
+same([$a], array_map('intval', array_column($app->catalog('红色', $bags), 'id')), 'search by variant and category');
+denied(fn() => $app->submitSku($pond, $a, "N-$tag", '跨店改名', 1, 0, $bags, '北仓帆布包', '红色', 'M', true, true, $redRelease),
+    'product ownership');
+denied(fn() => $app->reviewSku($admin, $hiddenRelease, false), 'rejecting SKU requires a reason');
+$app->reviewSku($admin, $hiddenRelease, false, '分类不符');
+denied(fn() => $app->reviewSku($admin, $hiddenRelease, true), 'rejected release cannot later be approved');
 denied(fn() => $app->quote($buyer, [$hidden => 1], 'store', 'Store A'), 'draft not purchasable');
+$blueRelease = $app->submitSku($catalogStaff, 0, "B-$tag", '北仓帆布包', 12000, 3, $bags, '北仓帆布包', '蓝色', 'M', false, true);
+$blueSku = $app->reviewSku($admin, $blueRelease, true);
+same([], $app->catalog("B-$tag", $bags, 'web'), 'pickup-only variant absent from delivery catalog');
+same($blueSku, (int) $app->catalog("B-$tag", $bags, 'store')[0]['id'], 'pickup-only variant appears in store catalog');
+denied(fn() => $app->quote($buyer, [$blueSku => 1], 'web', '测试配送地址'), 'checkout revalidates sales channel');
+$duplicateVariant = $app->submitSku($north, 0, "X-$tag", '同红色规格', 12000, 1, $bags, '北仓帆布包', '红色', 'M', true, true);
+denied(fn() => $app->reviewSku($admin, $duplicateVariant, true), 'duplicate variant refused at publication');
+$blueQuote = $app->quote($buyer, [$blueSku => 1], 'store', 'Store A');
+$app->unlistSku($catalogStaff, $blueSku);
+same([], $app->catalog("B-$tag"), 'unlisted variant disappears from product search');
+denied(fn() => $app->place($buyer, $blueQuote['token']), 'stale catalog result cannot be checked out after unlisting');
 same([1 => 1, 2 => 0, 3 => 0], Commerce::allocate(1, [1 => 1, 2 => 1, 3 => 1]), 'stable remainder tie-break');
 same(19600, $app->quote($buyer, [$a => 1, $b => 1], 'web', '测试配送地址')['total'], 'per-shop shipping');
 $quote = $app->quote($buyer, [$b => 1, $a => 1], 'store', '一号自提点');
@@ -109,7 +135,7 @@ denied(fn() => $app->place($otherBuyer, $quote['token']), 'quote ownership');
 $order = $app->place($buyer, $quote['token']);
 same($order, $app->place($buyer, $quote['token']), 'checkout replay returns same order');
 same(1, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$a])[0]['reserved'], 'stock held once');
-denied(fn() => $app->saveProduct($north, $a, "N-$tag", '北仓帆布包', 12000, 0, 'active'), 'stock cannot go below holds');
+denied(fn() => $app->adjustStock($north, $a, 0, 1), 'stock cannot go below holds');
 denied(fn() => $app->demoPay($otherBuyer, $order, "pay-$tag", 18000), 'payment ownership');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18001), 'payment amount validation');
 $payment = $app->demoPay($buyer, $order, "pay-$tag", 18000);
@@ -118,13 +144,17 @@ denied(fn() => $app->demoPay($buyer, $order, "alt-$tag", 18000), 'one receipt pe
 same(false, $app->cancel($order, $buyer), 'paid order cannot be cancelled');
 $inventory = $app->rows('SELECT stock,reserved FROM products WHERE id=?', [$a])[0];
 same([9, 0], array_map('intval', array_values($inventory)), 'stock consumed exactly once');
-denied(fn() => $app->saveProduct($north, $a, "N-$tag", '北仓帆布包', 12000, 10, 'active', 0),
+denied(fn() => $app->adjustStock($north, $a, 10, 0),
     'outdated stock edit cannot restore paid inventory');
 $merchantOrders = $app->rows('SELECT id,shop_id FROM merchant_orders WHERE order_id=? ORDER BY shop_id', [$order]);
 [$northOrder, $pondOrder] = array_map('intval', array_column($merchantOrders, 'id'));
 denied(fn() => $app->fulfill($pond, $northOrder, 'PICK-01'), 'fulfillment ownership');
 denied(fn() => $app->fulfill($catalogStaff, $northOrder, 'PICK-01'), 'catalog staff cannot fulfill');
 $aItem = (int) $app->rows('SELECT id FROM order_items WHERE merchant_order_id=?', [$northOrder])[0]['id'];
+$sold = $app->rows('SELECT i.sku,r.color,r.size FROM order_items i JOIN product_releases r ON r.id=i.product_release_id WHERE i.id=?', [$aItem])[0];
+same(["N-$tag", '红色', 'M'], array_values($sold), 'checkout records the actual red M SKU and its release');
+same([3, 0], array_map('intval', array_values($app->rows('SELECT stock,reserved FROM products WHERE id=?', [$blueSku])[0])),
+    'checkout of red variant leaves blue inventory unchanged');
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '测试', bin2hex(random_bytes(16))), 'refund requires fulfillment');
 $beforeSuspension = $app->quote($buyer, [$a => 1], 'store', '一号自提点');
 denied(fn() => $app->setShopSuspended($finance, $northShop, true, '暂停营业'), 'finance cannot suspend a shop');
@@ -191,7 +221,8 @@ same($cartOrder, $app->place($buyer, $cartQuote['token'], requireCartQuote: true
 same([$b], array_map('intval', array_column($app->cartLines($buyer), 'product_id')), 'checkout keeps unselected lines');
 same(true, $app->cancel($cartOrder, $buyer), 'test cart hold released');
 
-$race = $app->saveProduct($north, 0, "R-$tag", '最后一件', 200, 1, 'active');
+$raceRelease = $app->submitSku($north, 0, "R-$tag", '最后一件', 200, 1, $home, '并发用例', '', '', true, true);
+$race = $app->reviewSku($admin, $raceRelease, true);
 $q1 = $app->quote($buyer, [$race => 1], 'store', 'Store A');
 $q2 = $app->quote($otherBuyer, [$race => 1], 'store', 'Store A');
 $workers = [];
@@ -231,8 +262,18 @@ same(0, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$race])[0]
 same(false, $app->cancel($expired), 'expiry replay is a no-op');
 
 $stale = $app->quote($buyer, [$b => 1], 'store', 'Store A');
-$app->saveProduct($pond, $b, "P-$tag", '池畔早餐杯', 8100, 9, 'active');
+$cupUpdate = $app->submitSku($pond, $b, "P-$tag", '池畔早餐杯', 8100, 0, $home, '池畔陶瓷', '湖蓝', '300ml', true, true, $cupRelease);
+same(8000, (int) $app->catalog("P-$tag")[0]['price'], 'pending price does not overwrite the current release');
+denied(fn() => $app->submitSku($pond, $b, "P-$tag", '旧页面', 1, 0, $home, '池畔陶瓷', '湖蓝', '300ml', true, true, $cupRelease),
+    'stale edit cannot overwrite a newer request');
+$app->reviewSku($admin, $cupUpdate, true);
 denied(fn() => $app->place($buyer, $stale['token']), 'price changes invalidate quote');
+$redQuote = $app->quote($buyer, [$a => 1], 'store', 'Store A');
+$redUpdate = $app->submitSku($north, $a, "N-$tag", '北仓帆布包', 12000, 0, $bags, '北仓帆布包', '朱红', 'M', true, true, $redRelease);
+$app->reviewSku($admin, $redUpdate, true);
+denied(fn() => $app->place($buyer, $redQuote['token']), 'same-price variant revision invalidates quote');
+same('红色', $app->rows('SELECT r.color FROM order_items i JOIN product_releases r ON r.id=i.product_release_id WHERE i.id=?', [$aItem])[0]['color'],
+    'historical line retains the original approved attributes');
 $newQuote = $app->quote($buyer, [$b => 1], 'store', 'Store A');
 $newOrder = $app->place($buyer, $newQuote['token']);
 denied(fn() => $app->demoPay($buyer, $newOrder, "pay-$tag", 8100), 'gateway reference unique across orders');

@@ -212,9 +212,26 @@ try {
                     }
                     $app->setShopMemberEnabled($id, number('member'), $enabled === '1');
                     break;
-                case 'product':
-                    $app->saveProduct($id, number('id', 0), input('sku'), input('name'), cents(),
-                        number('stock', 0, 1_000_000_000), input('status'), number('version', 0));
+                case 'sku_submit':
+                    $app->submitSku($id, number('product', 0), input('sku'), input('name'), cents(),
+                        number('stock', 0, 1_000_000_000), number('category'), input('family'), input('color'), input('size'),
+                        input('delivery') === '1', input('pickup') === '1', number('revision', 0));
+                    break;
+                case 'sku_stock':
+                    $app->adjustStock($id, number('product'), number('stock', 0, 1_000_000_000), number('version', 0));
+                    break;
+                case 'sku_unlist':
+                    $app->unlistSku($id, number('product'));
+                    break;
+                case 'catalog_category':
+                    $app->createCategory($id, input('name'));
+                    break;
+                case 'sku_review':
+                    $decision = input('decision');
+                    if (!in_array($decision, ['approve', 'reject'], true)) {
+                        throw new RuleViolation('商品审核操作无效。');
+                    }
+                    $app->reviewSku($id, number('release'), $decision === 'approve', input('reason'));
                     break;
                 case 'fulfill':
                     $app->fulfill($id, number('merchant_order'), input('tracking'));

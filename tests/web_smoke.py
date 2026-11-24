@@ -180,3 +180,27 @@ assert "暂停接单" in closed and "本店账单" in closed and "新增商品" 
 admin.submit("/?page=platform", "shop_status", shop=shop_id, decision="resume", reason="盘点完成")
 assert "新增商品" in owner.load("/?page=merchant")
 print("Merchant web flow passed: application, approval, staff roles, session revocation, suspension, and reopening.")
+
+category_name = f"服饰验收 {suffix}"
+admin.submit("/?page=platform", "catalog_category", name=category_name)
+category = re.search(rf'<option value="(\d+)">{re.escape(category_name)}</option>', owner.load("/?page=merchant"))
+assert category, "new category missing from merchant editor"
+sku = f"BAG-{suffix}-RED-M"
+owner.submit("/?page=merchant", "sku_submit", product=0, revision=0, sku=sku, name="帆布包验收款",
+             family="帆布包验收系列", category=category[1], color="红色", size="M", price="129.90", stock=3, pickup=1)
+listing = f"/?q={sku}&category={category[1]}"
+assert "当前没有符合条件的商品" in buyer.load(listing)
+review = admin.load("/?page=platform")
+assert sku in review and "红色 M" in review
+admin.submit("/?page=platform", "sku_review", release=extract(review, "release"), decision="approve")
+assert "当前没有符合条件的商品" in buyer.load(listing + "&channel=web")
+store_listing = buyer.load(listing + "&channel=store")
+assert "红色 · M" in store_listing and "¥129.90" in store_listing
+variant_product = extract(store_listing, "product")
+buyer.submit(listing, "cart", product=variant_product, quantity=1)
+variant_quote = buyer.submit("/?page=cart", "quote", channel="store", destination="商品验收自提点")
+owner.submit("/?page=merchant", "sku_unlist", product=variant_product)
+blocked = buyer.submit("/?page=cart", "place", token=extract(variant_quote, "token"))
+assert "商品已下架" in blocked
+assert "当前没有符合条件的商品" in buyer.load(listing)
+print("Catalog web flow passed: category, variant, review, channel filter, unlisting, and stale checkout rejection.")
