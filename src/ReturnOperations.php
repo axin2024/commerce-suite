@@ -18,34 +18,37 @@ trait ReturnOperations
         if ($quantity < 1 || $reason === '' || strlen($reason) > 250 || !preg_match('/^[a-f0-9]{32}$/D', $key)) {
             throw new RuleViolation('请填写有效的售后数量和原因。');
         }
-        return $this->transaction(function () use ($buyer, $itemId, $quantity, $reason, $key): int {
-            $this->one('SELECT id FROM users WHERE id=? FOR UPDATE', [$buyer]);
-            $existing = $this->one('SELECT id,item_id,quantity,reason FROM refunds WHERE buyer_id=? AND request_key=?',
-                [$buyer, $key]);
-            if ($existing) {
-                if ((int) $existing['item_id'] !== $itemId || (int) $existing['quantity'] !== $quantity
-                    || $existing['reason'] !== $reason) {
-                    throw new RuleViolation('售后申请编号已使用。');
-                }
-                return (int) $existing['id'];
+        return $this->transaction(fn(): int => $this->requestReturnInTransaction($buyer, $itemId, $quantity, $reason, $key));
+    }
+
+    private function requestReturnInTransaction(int $buyer, int $itemId, int $quantity, string $reason, string $key): int
+    {
+        $this->one('SELECT id FROM users WHERE id=? FOR UPDATE', [$buyer]);
+        $existing = $this->one('SELECT id,item_id,quantity,reason FROM refunds WHERE buyer_id=? AND request_key=?',
+            [$buyer, $key]);
+        if ($existing) {
+            if ((int) $existing['item_id'] !== $itemId || (int) $existing['quantity'] !== $quantity
+                || $existing['reason'] !== $reason) {
+                throw new RuleViolation('售后申请编号已使用。');
             }
-            $item = $this->one("SELECT i.* FROM order_items i JOIN merchant_orders m ON m.id=i.merchant_order_id
-                JOIN orders o ON o.id=m.order_id WHERE i.id=? AND o.buyer_id=? AND m.status='fulfilled' FOR UPDATE OF i",
-                [$itemId, $buyer]);
-            if (!$item) {
-                throw new RuleViolation('订单明细不存在或尚未履约。');
-            }
-            $claims = $this->rows('SELECT ' . self::OPEN_RETURN_QUANTITY . ' AS units FROM refunds r
-                WHERE r.item_id=? FOR UPDATE', [$itemId]);
-            $remaining = (int) $item['quantity'] - (int) $item['refunded_quantity'] - array_sum(array_column($claims, 'units'));
-            if ($quantity > $remaining) {
-                throw new RuleViolation('当前可申请的数量不足。');
-            }
-            $id = $this->insert('INSERT INTO refunds (item_id,buyer_id,request_key,quantity,reason) VALUES (?,?,?,?,?)',
-                [$itemId, $buyer, $key, $quantity, $reason]);
-            $this->audit($buyer, 'refund.requested', $id, ['quantity' => $quantity]);
-            return $id;
-        });
+            return (int) $existing['id'];
+        }
+        $item = $this->one("SELECT i.* FROM order_items i JOIN merchant_orders m ON m.id=i.merchant_order_id
+            JOIN orders o ON o.id=m.order_id WHERE i.id=? AND o.buyer_id=? AND m.status='fulfilled' FOR UPDATE OF i",
+            [$itemId, $buyer]);
+        if (!$item) {
+            throw new RuleViolation('订单明细不存在或尚未履约。');
+        }
+        $claims = $this->rows('SELECT ' . self::OPEN_RETURN_QUANTITY . ' AS units FROM refunds r
+            WHERE r.item_id=? FOR UPDATE', [$itemId]);
+        $remaining = (int) $item['quantity'] - (int) $item['refunded_quantity'] - array_sum(array_column($claims, 'units'));
+        if ($quantity > $remaining) {
+            throw new RuleViolation('当前可申请的数量不足。');
+        }
+        $id = $this->insert('INSERT INTO refunds (item_id,buyer_id,request_key,quantity,reason) VALUES (?,?,?,?,?)',
+            [$itemId, $buyer, $key, $quantity, $reason]);
+        $this->audit($buyer, 'refund.requested', $id, ['quantity' => $quantity]);
+        return $id;
     }
 
     public function reviewReturn(int $merchant, int $id, ?int $warehouse, string $address, string $note): void
@@ -91,19 +94,22 @@ trait ReturnOperations
         if (!self::validTracking($carrier, $tracking)) {
             throw new RuleViolation('请填写有效的承运商代码和运单号。');
         }
+        $this->transaction(fn() => $this->dispatchReturnInTransaction($buyer, $id, $carrier, $tracking));
+    }
+
+    private function dispatchReturnInTransaction(int $buyer, int $id, string $carrier, string $tracking): void
+    {
         try {
-            $this->transaction(function () use ($buyer, $id, $carrier, $tracking): void {
-                $refund = $this->one('SELECT status,carrier,tracking FROM refunds WHERE id=? AND buyer_id=? FOR UPDATE', [$id, $buyer]);
-                if ($refund && $refund['carrier'] === $carrier && $refund['tracking'] === $tracking) {
-                    return;
-                }
-                if (!$refund || $refund['status'] !== 'return_authorized') {
-                    throw new RuleViolation('售后申请暂不可登记寄回。');
-                }
-                $this->query("UPDATE refunds SET status='return_in_transit',carrier=?,tracking=?,dispatched_at=UTC_TIMESTAMP() WHERE id=?",
-                    [$carrier, $tracking, $id]);
-                $this->audit($buyer, 'refund.dispatched', $id, ['carrier' => $carrier, 'tracking' => $tracking]);
-            });
+            $refund = $this->one('SELECT status,carrier,tracking FROM refunds WHERE id=? AND buyer_id=? FOR UPDATE', [$id, $buyer]);
+            if ($refund && $refund['carrier'] === $carrier && $refund['tracking'] === $tracking) {
+                return;
+            }
+            if (!$refund || $refund['status'] !== 'return_authorized') {
+                throw new RuleViolation('售后申请暂不可登记寄回。');
+            }
+            $this->query("UPDATE refunds SET status='return_in_transit',carrier=?,tracking=?,dispatched_at=UTC_TIMESTAMP() WHERE id=?",
+                [$carrier, $tracking, $id]);
+            $this->audit($buyer, 'refund.dispatched', $id, ['carrier' => $carrier, 'tracking' => $tracking]);
         } catch (PDOException $error) {
             if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
                 throw new RuleViolation('该退货运单已登记。');

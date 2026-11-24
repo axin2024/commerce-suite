@@ -87,7 +87,7 @@ jobs:
             sleep 1
           done
           python3 tests/catalog_channel_web.py
-      - name: Run external order HTTP and shared stock checks
+      - name: Run external checkout, shared stock and return checks
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
           COMMERCE_PAYMENT_EXTENSION: ${{ github.workspace }}/examples/payment-bridge.php

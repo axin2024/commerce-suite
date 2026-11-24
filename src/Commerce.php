@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/CatalogOperations.php';
 require_once __DIR__ . '/ChannelCatalogOperations.php';
 require_once __DIR__ . '/ChannelOrderOperations.php';
+require_once __DIR__ . '/ChannelReturnOperations.php';
 require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PreorderOperations.php';
@@ -29,6 +30,7 @@ final class Commerce
     use CatalogOperations;
     use ChannelCatalogOperations;
     use ChannelOrderOperations;
+    use ChannelReturnOperations;
     use InventoryOperations;
     use PickupOperations;
     use PreorderOperations;

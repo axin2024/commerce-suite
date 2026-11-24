@@ -1,7 +1,11 @@
 <?php
 $returnFilter = $canSupport ? '' : " AND r.return_warehouse_id IS NOT NULL";
-$refunds = $app->rows("SELECT r.*,i.name,m.shipping,w.name AS warehouse_name FROM refunds r JOIN order_items i ON i.id=r.item_id
+$refunds = $app->rows("SELECT r.*,i.name,m.shipping,w.name AS warehouse_name,c.code AS source_channel,
+    co.reference AS source_order,cr.reference AS source_return FROM refunds r JOIN order_items i ON i.id=r.item_id
     JOIN merchant_orders m ON m.id=i.merchant_order_id LEFT JOIN warehouses w ON w.id=r.return_warehouse_id
+    LEFT JOIN channel_returns cr ON cr.refund_id=r.id
+    LEFT JOIN channel_orders co ON co.order_id=m.order_id AND co.channel_id=cr.channel_id
+    LEFT JOIN catalog_channels c ON c.id=co.channel_id AND c.shop_id=m.shop_id
     WHERE m.shop_id=?$returnFilter ORDER BY FIELD(r.status,'return_in_transit','pending','return_authorized','refund_pending')=0,
     r.id DESC LIMIT 50", [$shop['id']]);
 $returnWarehouses = $canSupport ? $app->rows('SELECT id,name,address FROM warehouses WHERE shop_id=? ORDER BY id', [$shop['id']]) : [];
@@ -14,6 +18,10 @@ $returnWarehouses = $canSupport ? $app->rows('SELECT id,name,address FROM wareho
             <div>
                 <strong>#<?= e($refund['id']) ?> · <?= e($refund['name']) ?> × <?= e($refund['quantity']) ?></strong>
                 <?= badge($refund['status']) ?>
+                <?php if ($refund['source_channel'] !== null): ?>
+                    <p class="muted"><?= e($refund['source_channel']) ?> · 订单 <?= e($refund['source_order']) ?>
+                        · 退货 <?= e($refund['source_return']) ?></p>
+                <?php endif; ?>
                 <p>买家说明 <?= e($refund['reason']) ?></p>
                 <?php if ($refund['review_note']): ?><p>审核备注 <?= e($refund['review_note']) ?></p><?php endif; ?>
                 <?php if ($refund['warehouse_name']): ?><p>退货仓 <?= e($refund['warehouse_name']) ?> · <?= e($refund['return_address']) ?></p><?php endif; ?>

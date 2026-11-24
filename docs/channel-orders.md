@@ -42,7 +42,7 @@
 
 POST 使用 `Content-Type: application/json`，上限 16 KiB。订单创建后预留 15 分钟。后台任务处理过期订单，释放库存。只有平台支付渠道的验签实收回执可以确认付款。支付后商家可在履约工作台和历史订单看到渠道代码及外部单号，按原流程发货。合作方按外部单号查询 `unpaid`、`paid`、`cancelled`，以及 `fulfillment_status` 的发货和签收状态。
 
-目前接口覆盖下单到发货状态查询，合作方的退货申请、已在渠道收款的订单导入及物流明细推送需另接。
+已在合作渠道收款的订单导入及物流明细推送需另接。
 
 | 状态 | 常见处理 |
 | --- | --- |
@@ -55,4 +55,33 @@ POST 使用 `Content-Type: application/json`，上限 16 KiB。订单创建后�
 | 409 `order_not_payable`、`order_already_paid` | 先查询当前订单状态，再决定取消或走售后 |
 | 503 | 检查收银配置或按退避重试。重试提交时沿用原单号和原内容 |
 
-仓库的 [HTTP 回归](../tests/channel_order_web.py)使用两套 PHP 进程和同一 MySQL 测试库，同时提交相同单号，以及让站内和外部订单竞争同一件库存。运行时为两套 PHP 进程配置同一组[支付桥接](payment-channels.md)和[承运商桥接](carrier-adapters.md)样例，设置 `COMMERCE_CHANNEL_TEST_SECOND_URL` 指向第二个本机地址，再向测试脚本传入第一个地址。CI 会在两版 MySQL 上执行。
+## 退货与退款
+
+已履约订单按原订单行申请退货，一次提交一个 SKU。沿用该渠道的订单密钥，店铺暂停接单时仍可办理历史订单售后。
+
+对 `POST /channel-orders.php?action=return_request` 提交以下 JSON。
+
+```json
+{
+  "reference": "partner-ord-1",
+  "return_reference": "partner-return-1",
+  "sku": "NORTH-01",
+  "quantity": 1,
+  "reason": "收到后发现尺寸不合适"
+}
+```
+
+`return_reference` 在当前渠道内唯一，区分大小写，限 1–80 位 ASCII 字母、数字、连字符和下划线。数量取正整数，以原订单行剩余可退数量为上限。理由使用单行文字，最多 250 个 UTF-8 字节。首次申请返回 201。原样重试返回 200 及当前状态。已使用的退货单号改用其他订单、SKU、数量或理由，返回 409 `return_reference_conflict`。
+
+| 操作 | 用法 |
+| --- | --- |
+| 查询售后 | `GET /channel-orders.php?reference=partner-ord-1&return_reference=partner-return-1`。查询须提供同一渠道内对应的一对单号 |
+| 登记寄回 | `POST /channel-orders.php?action=return_dispatch`，传入 `{"reference":"partner-ord-1","return_reference":"partner-return-1","carrier":"parcel_v1","tracking":"RETURN-001"}`。商家同意后登记承运商和运单，重试时沿用原运单 |
+
+申请初始为 `pending`。商家审核通过后返回 `return_authorized` 和 `return_address`，寄回登记后为 `return_in_transit`。商家验收后可读到实收件数 `accepted_quantity`、回库件数 `restocked_quantity`、验收备注和整数分金额 `refund_amount_minor`。退款处理中为 `refund_pending`，由支付渠道回执确认后变为 `refunded` 并提供 `refund_reference` 与 Unix 秒 `confirmed_at`。审核或验收拒绝时返回 `rejected` 与对应备注。各阶段尚未产生的地址、验收和退款字段为 `null`。
+
+订单尚未履约返回 409 `order_not_fulfilled`，剩余数量不足返回 409 `return_unavailable`，原单缺少该 SKU 返回 404 `order_sku_not_found`。订单和退货单号未匹配或属于其他渠道时，查退货和登记寄回均返回 404 `return_not_found`。寄回状态不符或运单与已登记记录冲突时返回 409 `return_not_dispatchable`。退款和结算采用原订单付款与验收数据。
+
+## 回归
+
+仓库的 [HTTP 回归](../tests/channel_order_web.py)使用两套 PHP 进程和同一 MySQL 测试库，覆盖重复下单、跨渠道争抢库存，以及签收、退货验收与退款回执。运行时为两套 PHP 进程配置同一组[支付桥接](payment-channels.md)和[承运商桥接](carrier-adapters.md)样例，设置 `COMMERCE_CHANNEL_TEST_SECOND_URL` 指向第二个本机地址，再向测试脚本传入第一个地址。CI 会在两版 MySQL 上执行。

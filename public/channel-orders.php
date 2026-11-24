@@ -29,6 +29,9 @@ $token = $authorization[1];
 try {
     $app = new Commerce(database());
     if ($method === 'GET') {
+        if (isset($_GET['return_reference'])) {
+            channelOrderReply(200, $app->getChannelReturn($token, $_GET['reference'] ?? null, $_GET['return_reference']));
+        }
         channelOrderReply(200, $app->getChannelOrder($token, $_GET['reference'] ?? null));
     }
     if (!preg_match('/^application\/json\s*(?:;|$)/i', $_SERVER['CONTENT_TYPE'] ?? '')) {
@@ -49,6 +52,13 @@ try {
     if ($action === 'place') {
         [$created, $order] = $app->placeChannelOrder($token, $request);
         channelOrderReply($created ? 201 : 200, $order);
+    }
+    if ($action === 'return_request') {
+        [$created, $refund] = $app->requestChannelReturn($token, $request);
+        channelOrderReply($created ? 201 : 200, $refund);
+    }
+    if ($action === 'return_dispatch') {
+        channelOrderReply(200, $app->dispatchChannelReturn($token, $request));
     }
     if (($action === 'checkout' || $action === 'cancel') && array_keys($request) === ['reference']) {
         $result = $action === 'checkout' ? $app->checkoutChannelOrder($token, $request['reference'])
