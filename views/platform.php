@@ -1,11 +1,12 @@
 <?php
 $shops = $app->rows('SELECT s.*, COALESCE(b.net,0) AS net, COALESCE(b.entries,0) AS entries FROM shops s
-    LEFT JOIN (SELECT shop_id,SUM(gross-commission) AS net,COUNT(*) AS entries FROM ledger WHERE settlement_id IS NULL
+    LEFT JOIN (SELECT shop_id,SUM(' . Commerce::LEDGER_NET . ') AS net,COUNT(*) AS entries FROM ledger WHERE settlement_id IS NULL
     GROUP BY shop_id) b ON b.shop_id=s.id ORDER BY s.id DESC LIMIT 100');
 $shopFilter = filter_var($_GET['shop'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 0;
 $filter = $shopFilter ? ' WHERE l.shop_id=?' : '';
 $arguments = $shopFilter ? [$shopFilter] : [];
-$ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.shop_id' . $filter . ' ORDER BY l.id DESC LIMIT 80', $arguments);
+$ledger = $app->rows('SELECT l.*,s.name,' . Commerce::LEDGER_NET . ' AS net
+    FROM ledger l JOIN shops s ON s.id=l.shop_id' . $filter . ' ORDER BY l.id DESC LIMIT 80', $arguments);
 $receiptId = filter_var($_GET['receipt'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 0;
 $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 0;
 ?>
@@ -14,6 +15,7 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
     <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="/?page=settlements">结算单</a>
     <?php if ($role === 'admin'): ?><a href="#catalog-review">商品审核</a><a href="#marketing">会员与营销</a><?php endif; ?>
     <?php if (demoEnabled()): ?><a href="#receipts">沙箱支付回执</a><?php endif; ?>
+    <?php if ($role === 'finance'): ?><a href="#freight">平台承担退运费</a><?php endif; ?>
     <?php if ($role === 'finance' && sandboxRefundSecret() !== null): ?><a href="#return-refunds">退货退款回执</a><?php endif; ?>
     <?php if ($role === 'admin'): ?><a href="#audit">审计记录</a><?php endif; ?>
 </div>
@@ -73,11 +75,11 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
         <?php if ($shopFilter): ?><a href="/?page=platform#ledger">查看全部店铺</a><?php endif; ?></div>
     <?php if (!$ledger): ?><p class="muted">暂无分录。</p><?php else: ?>
         <div class="table-wrap"><table>
-            <thead><tr><th>店铺</th><th>事件</th><th>子订单</th><th>总额</th><th>佣金</th><th>应结</th><th>批次</th></tr></thead>
+            <thead><tr><th>店铺</th><th>事件</th><th>子订单</th><th>总额</th><th>佣金</th><th>平台承担运费</th><th>应结</th><th>批次</th></tr></thead>
             <tbody><?php foreach ($ledger as $entry): ?>
                 <tr><td><?= e($entry['name']) ?></td><td><?= $entry['kind'] === 'sale' ? '销售' : '退款冲正' ?></td>
                     <td>#<?= e($entry['merchant_order_id']) ?></td><td><?= cash($entry['gross']) ?></td>
-                    <td><?= cash($entry['commission']) ?></td><td><?= cash($entry['gross'] - $entry['commission']) ?></td>
+                    <td><?= cash($entry['commission']) ?></td><td><?= cash($entry['platform_freight']) ?></td><td><?= cash($entry['net']) ?></td>
                     <td><?php if ($entry['settlement_id']): ?>
                         <a href="/?page=settlements&amp;batch=<?= e($entry['settlement_id']) ?>">#<?= e($entry['settlement_id']) ?></a>
                     <?php else: ?>待结算<?php endif; ?></td></tr>
@@ -115,10 +117,11 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
     <?php endforeach; ?>
 </section>
 <?php endif; ?>
+<?php if ($role === 'finance') { require __DIR__ . '/return_freight.php'; } ?>
 <?php if ($role === 'finance' && (sandboxRefundSecret() !== null || $returnReceiptId)): ?>
 <section class="panel" id="return-refunds">
     <h2>退货退款回执</h2>
-    <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,
+    <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,r.freight_amount,r.freight_payer,
         p.reference AS payment_reference,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
         JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN shops s ON s.id=m.shop_id
         JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')"
@@ -129,6 +132,10 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
         <div class="record">
             <div><strong>#<?= e($returnReceipt['id']) ?> · <?= e($returnReceipt['name']) ?> · <?= cash($returnReceipt['amount']) ?></strong>
                 <?= badge($returnReceipt['status']) ?>
+                <?php if ($returnReceipt['freight_amount'] > 0): ?>
+                    <p>货款 <?= cash($returnReceipt['amount'] - $returnReceipt['freight_amount']) ?>
+                        · 退运费 <?= cash($returnReceipt['freight_amount']) ?> · <?= e(Commerce::FREIGHT_PAYERS[$returnReceipt['freight_payer']]) ?></p>
+                <?php endif; ?>
                 <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code></p>
                 <?php if ($returnReceipt['status'] === 'refund_pending' && sandboxRefundSecret() !== null): ?>
                     <p>沙箱退款意图 <code class="return-token"><?= e($returnReceipt['refund_token']) ?></code></p>

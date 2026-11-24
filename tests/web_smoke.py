@@ -416,6 +416,38 @@ if SHIPPING_SECRET:
     assert tracking_a in delivered and tracking_b in delivered and delivered.count("已签收") == 2 and "已履约" in delivered
     assert "¥52.00" in owner.load("/?page=merchant").split('id="finance"', 1)[1]
     print("Delivery web flow passed: split freight, warehouse stock, parcel dispatch, signed delivery, and sale ledger.")
+    if REFUND_SECRET:
+        claim_form, = forms(delivered, "refund")
+        buyer.submit("/?page=orders", "refund", item=extract(claim_form, "item"), key=extract(claim_form, "key"),
+                     quantity=1, reason="分仓退运费验收")
+        approve_freight, = forms(owner.load("/?page=merchant"), "return_approve")
+        freight_refund = extract(approve_freight, "refund")
+        owner.submit("/?page=merchant", "return_approve", refund=freight_refund, warehouse=extract(stock_form, "warehouse"))
+        finance_freight = f"/?page=platform&freight_return={freight_refund}"
+        assert not forms(admin.load(finance_freight), "return_freight")
+        merchant_freight, = forms(owner.load("/?page=merchant"), "return_freight")
+        assert "商家承担退运费" in owner.load("/?page=merchant") and extract(merchant_freight, "refund") == freight_refund
+        platform_freight, = forms(finance.load(finance_freight), "return_freight")
+        assert extract(platform_freight, "refund") == freight_refund
+        finance_saved = finance.submit(finance_freight, "return_freight", refund=freight_refund, freight="8.00", note="分仓配送延误")
+        assert "退运费 ¥8.00 · 平台承担" in finance_saved
+        assert "分仓配送延误" in owner.load("/?page=merchant")
+        assert "退运费 ¥8.00 · 平台承担" in buyer.load("/?page=orders")
+        buyer.submit("/?page=orders", "return_dispatch", refund=freight_refund, carrier="demo", tracking=f"web-return-{suffix}")
+        owner.submit("/?page=merchant", "return_inspect", refund=freight_refund, accepted=1, restocked=0)
+        freight_queue = finance.load(f"/?page=platform&return_receipt={freight_refund}")
+        assert "货款 ¥12.00" in freight_queue
+        freight_payload = {
+            "refund_token": re.search(r'<code class="return-token">([a-f0-9]{32})</code>', freight_queue)[1],
+            "payment_reference": re.search(r'<code class="return-payment">([^<]+)</code>', freight_queue)[1],
+            "reference": f"freight-refunded-{suffix}", "amount": 2000, "currency": "CNY",
+        }
+        assert return_webhook({**freight_payload, "amount": 1200}) == (409, {"error": "refund_conflict"})
+        assert return_webhook(freight_payload) == (200, {"refund_id": int(freight_refund), "status": "refunded"})
+        assert freight_payload["reference"] in buyer.load("/?page=orders")
+        merchant_ledger = owner.load("/?page=merchant").split('id="finance"', 1)[1]
+        assert re.search("−¥20.00.*−¥1.20.*¥8.00.*−¥10.80", merchant_ledger, re.S)
+        print("Refund freight web flow passed: finance decision, buyer disclosure, signed total, and merchant statement.")
 
 pre_sku = f"PRE-{suffix}"
 owner.submit("/?page=merchant", "sku_submit", product=0, revision=0, sku=pre_sku, name="预售验收款", family="预售验收系列",

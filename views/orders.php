@@ -106,6 +106,9 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                     <?php endif; ?>
                     <?php if ($refund['accepted_quantity'] !== null): ?><p>验收 <?= e($refund['accepted_quantity']) ?> 件</p><?php endif; ?>
                     <?php if ($refund['inspection_note']): ?><p>验收备注 <?= e($refund['inspection_note']) ?></p><?php endif; ?>
+                    <?php if ($refund['freight_amount'] > 0 && $refund['status'] !== 'rejected'): ?>
+                        <p>退运费 <?= cash($refund['freight_amount']) ?> · <?= e(Commerce::FREIGHT_PAYERS[$refund['freight_payer']]) ?></p>
+                    <?php endif; ?>
                     <?php if ($refund['refund_reference']): ?><p>退款流水 <?= e($refund['refund_reference']) ?></p><?php endif; ?>
                 </div>
                 <?php if ($refund['status'] === 'return_authorized'):

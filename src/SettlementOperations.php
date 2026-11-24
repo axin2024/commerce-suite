@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 trait SettlementOperations
 {
+    public const LEDGER_NET = '(gross-commission+platform_freight)';
     private const SETTLEMENT_TOTALS = "COUNT(*) AS entries, COALESCE(MAX(id),0) AS last_entry,
         COALESCE(SUM(CASE WHEN kind='sale' THEN gross ELSE 0 END),0) AS sales,
         COALESCE(-SUM(CASE WHEN kind='refund' THEN gross ELSE 0 END),0) AS refunds,
-        COALESCE(SUM(commission),0) AS commission, COALESCE(SUM(gross-commission),0) AS net";
+        COALESCE(SUM(commission),0) AS commission, COALESCE(SUM(platform_freight),0) AS platform_freight,
+        COALESCE(SUM(" . self::LEDGER_NET . "),0) AS net";
 
     public function previewSettlement(int $finance, int $shop, string $month, string $currency): array
     {
@@ -160,7 +162,8 @@ trait SettlementOperations
     public function settlementEntries(int $actor, int $id, int $after = 0): array
     {
         $this->settlementExportScope($actor, $id);
-        return $this->rows('SELECT id,event_key,merchant_order_id,kind,currency,gross,commission,created_at
+        return $this->rows('SELECT id,event_key,merchant_order_id,kind,currency,gross,commission,created_at,platform_freight,'
+            . self::LEDGER_NET . ' AS net
             FROM ledger WHERE settlement_id=? AND id>? ORDER BY id LIMIT 101', [$id, $after]);
     }
 
@@ -168,16 +171,17 @@ trait SettlementOperations
     {
         $batch = $this->settlementExportScope($actor, $id);
         yield ['shop_id', 'period_utc', 'settlement_id', 'entry_id', 'event', 'merchant_order_id', 'kind',
-            'currency', 'gross_minor', 'commission_minor', 'net_minor', 'posted_at_utc'];
+            'currency', 'gross_minor', 'commission_minor', 'net_minor', 'posted_at_utc', 'platform_freight_minor'];
         $after = 0;
         do {
-            $rows = $this->rows('SELECT id,event_key,merchant_order_id,kind,currency,gross,commission,created_at
+            $rows = $this->rows('SELECT id,event_key,merchant_order_id,kind,currency,gross,commission,created_at,platform_freight,'
+                . self::LEDGER_NET . ' AS net
                 FROM ledger WHERE settlement_id=? AND id>? ORDER BY id LIMIT 1000', [$id, $after]);
             foreach ($rows as $row) {
                 $after = (int) $row['id'];
                 yield [$batch['shop_id'], $batch['period'] ? substr($batch['period'], 0, 7) : '',
                     $id, $after, $row['event_key'], $row['merchant_order_id'], $row['kind'], $row['currency'],
-                    $row['gross'], $row['commission'], (int) $row['gross'] - (int) $row['commission'], $row['created_at']];
+                    $row['gross'], $row['commission'], (int) $row['net'], $row['created_at'], $row['platform_freight']];
             }
         } while (count($rows) === 1000);
     }

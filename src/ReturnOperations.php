@@ -9,6 +9,8 @@ trait ReturnOperations
         WHEN r.status='refund_pending' THEN r.accepted_quantity
         ELSE 0 END";
 
+    public const FREIGHT_PAYERS = ['merchant' => '商家承担', 'platform' => '平台承担'];
+
     public function requestRefund(int $buyer, int $itemId, int $quantity, string $reason, string $key): int
     {
         $this->actor($buyer, 'buyer');
@@ -110,6 +112,53 @@ trait ReturnOperations
         }
     }
 
+    public function decideReturnFreight(int $actor, int $id, int $amount, string $note): void
+    {
+        $role = $this->actor($actor, 'merchant', 'finance')['role'];
+        $note = trim($note);
+        if ($amount < 0 || $note === '' || strlen($note) > 250) {
+            throw new RuleViolation('请填写有效的退运费金额和处理依据。');
+        }
+        $payer = $role === 'finance' ? 'platform' : 'merchant';
+        $this->transaction(function () use ($actor, $role, $id, $amount, $note, $payer): void {
+            if ($role === 'finance') {
+                $scope = $this->one('SELECT m.shop_id FROM refunds r JOIN order_items i ON i.id=r.item_id
+                    JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE r.id=?', [$id]);
+                if (!$scope) {
+                    throw new RuleViolation('售后申请不存在。');
+                }
+                $shop = (int) $scope['shop_id'];
+            } else {
+                $shop = (int) $this->shopActor($actor, 'support')['shop_id'];
+            }
+            $refund = $this->lockReturn($id, $shop);
+            if ($refund['freight_payer'] !== null && $refund['freight_payer'] !== $payer) {
+                throw new RuleViolation('这笔运费已由另一承担方确认。');
+            }
+            if ((int) $refund['freight_amount'] === $amount && $refund['freight_note'] === $note
+                && ($amount > 0 || (int) $refund['freight_decided_by'] === $actor)) {
+                return;
+            }
+            if (!in_array($refund['status'], ['return_authorized', 'return_in_transit'], true)) {
+                throw new RuleViolation('退货审核通过后、验收前可登记运费。');
+            }
+            if ($amount === 0 && $refund['freight_payer'] === null) {
+                throw new RuleViolation('当前没有可撤回的运费决定。');
+            }
+            // Use a locking read after acquiring the shop lock, including decisions on other lines of the same suborder.
+            $held = $this->rows("SELECT r.freight_amount FROM order_items i JOIN refunds r ON r.item_id=i.id
+                WHERE i.merchant_order_id=? AND r.id<>? AND r.freight_amount>0
+                AND r.status IN ('return_authorized','return_in_transit','refund_pending','refunded') FOR UPDATE OF r",
+                [$refund['merchant_order_id'], $id]);
+            if ($amount > (int) $refund['shipping'] - array_sum(array_column($held, 'freight_amount'))) {
+                throw new RuleViolation('该子订单可退运费不足。');
+            }
+            $this->query('UPDATE refunds SET freight_amount=?,freight_payer=?,freight_note=?,freight_decided_by=?,
+                freight_decided_at=UTC_TIMESTAMP() WHERE id=?', [$amount, $amount > 0 ? $payer : null, $note, $actor, $id]);
+            $this->audit($actor, 'refund.freight_decided', $id, ['payer' => $payer, 'amount' => $amount, 'note' => $note]);
+        });
+    }
+
     public function inspectReturn(int $merchant, int $id, int $accepted, int $restocked, string $note): void
     {
         $note = trim($note);
@@ -138,7 +187,9 @@ trait ReturnOperations
                 throw new RuleViolation('退款数量超过购买数量。');
             }
             $net = $quantity * (int) $refund['unit_price'] - (int) $refund['discount'];
-            $amount = intdiv($net * $after, $quantity) - intdiv($net * $before, $quantity);
+            $goods = intdiv($net * $after, $quantity) - intdiv($net * $before, $quantity);
+            $freight = $accepted > 0 ? (int) $refund['freight_amount'] : 0;
+            $amount = $goods + $freight;
             $fee = (int) $refund['item_commission'];
             $commission = intdiv($fee * $after, $quantity) - intdiv($fee * $before, $quantity);
             if ($restocked > 0) {
@@ -150,7 +201,7 @@ trait ReturnOperations
                 inspected_at=UTC_TIMESTAMP(),amount=?,commission=?,refund_token=? WHERE id=?',
                 [$status, $accepted, $restocked, $note, $merchant, $amount, $commission, $token, $id]);
             $this->audit($merchant, 'refund.inspected', $id, ['accepted' => $accepted, 'restocked' => $restocked,
-                'status' => $status, 'amount' => $amount, 'note' => $note]);
+                'status' => $status, 'amount' => $amount, 'goods' => $goods, 'freight' => $freight, 'note' => $note]);
         });
     }
 
@@ -184,9 +235,11 @@ trait ReturnOperations
                         [$reference, $id]);
                     $this->query('UPDATE order_items SET refunded_quantity=refunded_quantity+? WHERE id=?',
                         [$refund['accepted_quantity'], $refund['item_id']]);
-                    $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
-                        VALUES (?,?,?,'refund',?,?)", [
+                    $credit = $refund['freight_payer'] === 'platform' ? (int) $refund['freight_amount'] : 0;
+                    $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission,platform_freight)
+                        VALUES (?,?,?,'refund',?,?,?)", [
                         $identity['shop_id'], $refund['merchant_order_id'], 'refund-' . $id, -$amount, -(int) $refund['commission'],
+                        $credit,
                     ]);
                     $this->audit(null, 'refund.confirmed', $id, ['reference' => $reference, 'amount' => $amount]);
                 }
@@ -205,7 +258,7 @@ trait ReturnOperations
         $this->one("SELECT id FROM shops WHERE id=? AND status IN ('active','suspended') FOR UPDATE", [$shop])
             ?? throw new RuleViolation('当前店铺不可处理售后。');
         // All quantity reservations and releases serialize on the order line.
-        $item = $this->one('SELECT i.* FROM refunds r JOIN order_items i ON i.id=r.item_id
+        $item = $this->one('SELECT i.*,m.shipping FROM refunds r JOIN order_items i ON i.id=r.item_id
             JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE r.id=? AND m.shop_id=? FOR UPDATE OF i', [$id, $shop]);
         if (!$item) {
             throw new RuleViolation('售后申请不存在。');
@@ -213,7 +266,7 @@ trait ReturnOperations
         return $this->one('SELECT * FROM refunds WHERE id=? FOR UPDATE', [$id]) + [
             'item_quantity' => $item['quantity'], 'product_id' => $item['product_id'], 'refunded_quantity' => $item['refunded_quantity'],
             'merchant_order_id' => $item['merchant_order_id'], 'unit_price' => $item['unit_price'],
-            'discount' => $item['discount'], 'item_commission' => $item['commission'],
+            'discount' => $item['discount'], 'item_commission' => $item['commission'], 'shipping' => $item['shipping'],
         ];
     }
 

@@ -361,6 +361,13 @@ try {
                 case 'return_dispatch':
                     $app->dispatchReturn($id, number('refund'), input('carrier'), input('tracking'));
                     break;
+                case 'return_freight':
+                    $refund = number('refund');
+                    if ($role === 'finance') {
+                        $nextParams = ['freight_return' => $refund];
+                    }
+                    $app->decideReturnFreight($id, $refund, cents('freight'), input('note'));
+                    break;
                 case 'return_inspect':
                     $app->inspectReturn($id, number('refund'), number('accepted', 0, 99), number('restocked', 0, 99), input('note'));
                     break;

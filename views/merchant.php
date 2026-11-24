@@ -129,11 +129,11 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
     <?php $entries = $app->merchantLedger((int) $user['id']); ?>
     <?php if (!$entries): ?><p class="muted">暂无结算分录。</p><?php else: ?>
         <div class="table-wrap"><table>
-            <thead><tr><th>子订单</th><th>事件</th><th>总额</th><th>佣金</th><th>净额</th><th>结算批次</th></tr></thead>
+            <thead><tr><th>子订单</th><th>事件</th><th>总额</th><th>佣金</th><th>平台承担运费</th><th>净额</th><th>结算批次</th></tr></thead>
             <tbody><?php foreach ($entries as $entry): ?>
                 <tr><td>#<?= e($entry['merchant_order_id']) ?></td><td><?= $entry['kind'] === 'sale' ? '销售' : '退款冲正' ?></td>
                     <td><?= cash($entry['gross']) ?></td><td><?= cash($entry['commission']) ?></td>
-                    <td><?= cash($entry['gross'] - $entry['commission']) ?></td>
+                    <td><?= cash($entry['platform_freight']) ?></td><td><?= cash($entry['net']) ?></td>
                     <td><?php if ($entry['settlement_id']): ?>
                         <a href="/?page=settlements&amp;batch=<?= e($entry['settlement_id']) ?>">#<?= e($entry['settlement_id']) ?></a>
                     <?php else: ?>待结算<?php endif; ?></td></tr>

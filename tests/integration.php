@@ -35,7 +35,7 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
-if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker'], true)) {
+if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker', 'freight-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
@@ -48,6 +48,9 @@ if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settl
             echo 'frozen-' . $app->freezeSettlement((int) $argv[2], (int) $argv[3], $argv[4], 'CNY', $argv[5]) . "\n";
         } elseif ($worker === 'bill-worker') {
             echo 'checked-' . $app->processChannelBills() . "\n";
+        } elseif ($worker === 'freight-worker') {
+            $app->decideReturnFreight((int) $argv[2], (int) $argv[3], (int) $argv[4], '原运费退款');
+            echo "saved\n";
         } elseif ($argv[2] === 'receive') {
             $app->receivePreorder((int) $argv[3], (int) $argv[4], (int) $argv[5]);
             echo "received\n";
@@ -275,6 +278,7 @@ denied(fn() => $app->reviewReturn($supportStaff, $refund, $foreignWarehouse, '�
 denied(fn() => $app->reviewReturn($supportStaff, $refund, $main, '', ''), 'return destination needs an address');
 $app->reviewReturn($supportStaff, $refund, $main, '北仓园区', '');
 $app->reviewReturn($north, $refund, $main, '北仓园区', '');
+denied(fn() => $app->decideReturnFreight($supportStaff, $refund, 1, '补偿'), 'pickup has no paid freight to refund');
 denied(fn() => $app->reviewReturn($north, $refund, $main, '其他地址', ''), 'review replay cannot change the destination');
 denied(fn() => $app->inspectReturn($fulfillmentStaff, $refund, 1, 1, ''), 'inspection requires a dispatched return');
 denied(fn() => $app->dispatchReturn($otherBuyer, $refund, 'demo', "return-$tag"), 'another buyer cannot register the parcel');
@@ -536,33 +540,59 @@ $firstReturn = $openReturn(2);
 denied(fn() => $openReturn(2), 'overlapping applications cannot exceed the purchased units');
 $app->reviewReturn($supportStaff, $firstReturn, $east, '', '');
 same('示例东区配送中心', $returnDetails($firstReturn)['return_address'], 'review snapshots the configured warehouse address');
+denied(fn() => $app->decideReturnFreight($pond, $firstReturn, 800, '送达延误'), 'other shop cannot decide freight');
+denied(fn() => $app->decideReturnFreight($fulfillmentStaff, $firstReturn, 800, '送达延误'), 'warehouse cannot decide freight');
+denied(fn() => $app->decideReturnFreight($supportStaff, $firstReturn, 1601, '送达延误'), 'freight decision cannot exceed original shipping');
+$app->decideReturnFreight($supportStaff, $firstReturn, 800, '送达延误');
+$app->decideReturnFreight($supportStaff, $firstReturn, 800, '送达延误');
+same([800, 'merchant', $supportStaff], [(int) $returnDetails($firstReturn)['freight_amount'],
+    $returnDetails($firstReturn)['freight_payer'], (int) $returnDetails($firstReturn)['freight_decided_by']],
+    'merchant-funded decision records exact amount and operator');
+denied(fn() => $app->decideReturnFreight($finance, $firstReturn, 800, '平台运费'), 'finance cannot replace a merchant decision');
 $app->dispatchReturn($buyer, $firstReturn, 'demo', "r-one-$tag");
 denied(fn() => $app->inspectReturn($fulfillmentStaff, $firstReturn, 1, 1, ''), 'short shipment requires an inspection note');
 $app->inspectReturn($fulfillmentStaff, $firstReturn, 1, 1, '包裹仅收到一件');
+denied(fn() => $app->decideReturnFreight($supportStaff, $firstReturn, 0, '撤回运费'), 'accepted inspection freezes freight');
 $refusedReturn = $openReturn(2);
 $app->reviewReturn($supportStaff, $refusedReturn, null, '', '请按实际寄回件数重新申请');
+$emptyReturn = $openReturn(2);
+$app->reviewReturn($supportStaff, $emptyReturn, $east, '', '');
+$app->decideReturnFreight($finance, $emptyReturn, 800, '分仓延误');
+$app->dispatchReturn($buyer, $emptyReturn, 'demo', "r-empty-$tag");
+$app->inspectReturn($fulfillmentStaff, $emptyReturn, 0, 0, '空包裹');
+same([0, 800, 'rejected'], [(int) $returnDetails($emptyReturn)['amount'],
+    (int) $returnDetails($emptyReturn)['freight_amount'], $returnDetails($emptyReturn)['status']],
+    'rejected inspection releases the hold and preserves its decision');
 $secondReturn = $openReturn(2);
 $app->reviewReturn($supportStaff, $secondReturn, $east, '', '');
+denied(fn() => $app->decideReturnFreight($finance, $secondReturn, 801, '配送延误'), 'pending receipt holds freight against the suborder cap');
+$app->decideReturnFreight($supportStaff, $secondReturn, 800, '配送延误');
+$app->decideReturnFreight($supportStaff, $secondReturn, 0, '平台接手');
+$app->decideReturnFreight($finance, $secondReturn, 800, '平台配送延误补偿');
+denied(fn() => $app->decideReturnFreight($supportStaff, $secondReturn, 0, '撤回运费'), 'merchant cannot withdraw platform funding');
 denied(fn() => $app->dispatchReturn($buyer, $secondReturn, 'demo', "r-one-$tag"), 'one return parcel cannot be reused');
 $app->dispatchReturn($buyer, $secondReturn, 'demo', "r-two-$tag");
 $app->inspectReturn($fulfillmentStaff, $secondReturn, 2, 0, '两件商品破损，按验收结果退款');
 same([[$main, 0, 0], [$east, 1, 0]], $multiBalance(), 'unsellable accepted units are not returned to available stock');
 $firstPending = $returnDetails($firstReturn);
 $secondPending = $returnDetails($secondReturn);
-same([1207, 120, 2414, 242], [(int) $firstPending['amount'], (int) $firstPending['commission'],
-    (int) $secondPending['amount'], (int) $secondPending['commission']], 'partial receipts reserve rounding tail before confirmation');
+same([2007, 120, 3214, 242], [(int) $firstPending['amount'], (int) $firstPending['commission'],
+    (int) $secondPending['amount'], (int) $secondPending['commission']], 'freight joins the rounded refund without commission');
 denied(fn() => $openReturn(1), 'both accepted returns remain reserved while waiting for confirmation');
-$app->recordReturnReceipt($secondPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 2414);
-denied(fn() => $app->recordReturnReceipt($firstPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 1207),
+denied(fn() => $app->recordReturnReceipt($secondPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 2414),
+    'channel receipt must include approved freight');
+$app->recordReturnReceipt($secondPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 3214);
+denied(fn() => $app->recordReturnReceipt($firstPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 2007),
     'a channel reference cannot confirm two intents');
-$app->recordReturnReceipt($firstPending['refund_token'], "r-paid-one-$tag", "multi-$tag", 'CNY', 1207);
+$app->recordReturnReceipt($firstPending['refund_token'], "r-paid-one-$tag", "multi-$tag", 'CNY', 2007);
 same(3, (int) $app->rows('SELECT refunded_quantity FROM order_items WHERE id=?', [$deliveryItem])[0]['refunded_quantity'],
     'out-of-order channel confirmations complete the line once');
 same($settledBeforeReturn, $batchSnapshot(), 'late refund leaves the historical batch and its sale unchanged');
-same([-3259, 2], array_map('intval', array_values($app->rows('SELECT SUM(gross-commission),COUNT(*) FROM ledger
-    WHERE merchant_order_id=? AND settlement_id IS NULL', [$deliveryOrder])[0])), 'refund and commission carry forward, excluding freight');
+same([-4059, 2], array_map('intval', array_values($app->rows('SELECT SUM(' . Commerce::LEDGER_NET . '),COUNT(*) FROM ledger
+    WHERE merchant_order_id=? AND settlement_id IS NULL', [$deliveryOrder])[0])), 'merchant bears only its own freight decision');
 $carry = $app->previewSettlement($finance, $northShop, $currentPeriod, 'CNY');
-same([-3259, 3621, -362], [$carry['net'], $carry['refunds'], $carry['commission']], 'current month picks up prior period reversal');
+same([-4059, 5221, -362, 800], [$carry['net'], $carry['refunds'], $carry['commission'], $carry['platform_freight']],
+    'current month picks up the prior reversal and platform funding');
 denied(fn() => $freeze($finance, $northShop, $currentPeriod, $carry), 'negative net from a settled sale rolls into the next batch');
 
 $eastPickup = $app->savePickupLocation($north, 0, $east, 'EAST', '东区自提门店', '东区 10 号', true);
@@ -853,10 +883,43 @@ same(null, $nextPreview['blocked'], 'later sales offset the carried refunds');
 $nextBatch = $freeze($finance, $northShop, $currentPeriod, $nextPreview);
 same(2, count($app->rows("SELECT id FROM ledger WHERE merchant_order_id=? AND kind='refund' AND settlement_id=?",
     [$deliveryOrder, $nextBatch])), 'next statement freezes both late refunds');
+$nextCsv = iterator_to_array($app->exportSettlement($finance, $nextBatch), false);
+same('platform_freight_minor', $nextCsv[0][12], 'settlement export identifies platform-funded freight');
+$freightRows = array_column(array_filter($nextCsv, static fn(array $entry): bool =>
+    (int) $entry[5] === $deliveryOrder && $entry[6] === 'refund'), null, 4);
+$csvAmounts = static fn(array $entry): array => array_map('intval', [$entry[8], $entry[9], $entry[10], $entry[12]]);
+same([-3214, -242, -2172, 800], $csvAmounts($freightRows["refund-$secondReturn"]), 'platform funding offsets the merchant debit');
+same([-2007, -120, -1887, 0], $csvAmounts($freightRows["refund-$firstReturn"]), 'merchant-funded freight stays in its debit');
 same($settledBeforeReturn, $batchSnapshot(), 'opening the next statement never modifies the previous report');
 $app->reviewSettlement($finance, $nextBatch, $nextPreview['net']);
 denied(fn() => $app->recordSettlementTransfer($payout, $nextBatch, "bank-$tag", $nextPreview['net']),
     'bank receipt cannot be reused on another settlement');
+
+$freightProducts = [];
+foreach (['A', 'B'] as $variant) {
+    $release = $app->submitSku($north, 0, "FR-$variant-$tag", "运费并发验收 $variant", 1000, 1, $bags,
+        '运费并发验收', '', $variant, true, false);
+    $freightProducts[$app->reviewSku($admin, $release, true)] = 1;
+}
+$freightQuote = $app->quote($buyer, $freightProducts, 'web', '运费并发验收地址');
+same(800, $freightQuote['shipping'], 'two lines in one warehouse share one freight charge');
+$freightParent = $app->place($buyer, $freightQuote['token']);
+$app->demoPay($buyer, $freightParent, "freight-pay-$tag", $freightQuote['total']);
+$freightOrder = $childOrder($freightParent);
+$freightLines = $app->unshippedLines($freightOrder, $main);
+$app->dispatchShipment($fulfillmentStaff, $freightOrder, $main, 'demo', "freight-out-$tag",
+    array_map('intval', array_column($freightLines, 'remaining', 'id')), bin2hex(random_bytes(16)));
+$app->recordDelivery('demo', "freight-out-$tag", "freight-delivered-$tag");
+$freightClaims = [];
+foreach ($app->rows('SELECT id FROM order_items WHERE merchant_order_id=? ORDER BY id', [$freightOrder]) as $item) {
+    $claim = $app->requestRefund($buyer, (int) $item['id'], 1, '并发运费申请', bin2hex(random_bytes(16)));
+    $app->reviewReturn($supportStaff, $claim, $east, '', '');
+    $freightClaims[] = $claim;
+}
+same(['saved', 'unavailable'], compete('freight-worker', [[$supportStaff, $freightClaims[0], 800],
+    [$finance, $freightClaims[1], 800]]), 'competing decisions on different lines share one order-wide ceiling');
+same(800, (int) $returnDetails($freightClaims[0])['freight_amount'] + (int) $returnDetails($freightClaims[1])['freight_amount'],
+    'the combined hold equals the original freight after the race');
 
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');

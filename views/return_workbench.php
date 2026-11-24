@@ -1,6 +1,6 @@
 <?php
 $returnFilter = $canSupport ? '' : " AND r.return_warehouse_id IS NOT NULL";
-$refunds = $app->rows("SELECT r.*,i.name,w.name AS warehouse_name FROM refunds r JOIN order_items i ON i.id=r.item_id
+$refunds = $app->rows("SELECT r.*,i.name,m.shipping,w.name AS warehouse_name FROM refunds r JOIN order_items i ON i.id=r.item_id
     JOIN merchant_orders m ON m.id=i.merchant_order_id LEFT JOIN warehouses w ON w.id=r.return_warehouse_id
     WHERE m.shop_id=?$returnFilter ORDER BY FIELD(r.status,'return_in_transit','pending','return_authorized','refund_pending')=0,
     r.id DESC LIMIT 50", [$shop['id']]);
@@ -23,8 +23,16 @@ $returnWarehouses = $canSupport ? $app->rows('SELECT id,name,address FROM wareho
                         · <?= e($refund['inspected_at']) ?> UTC</p>
                 <?php endif; ?>
                 <?php if ($refund['inspection_note']): ?><p>验收备注 <?= e($refund['inspection_note']) ?></p><?php endif; ?>
+                <?php if ($refund['freight_amount'] > 0): ?>
+                    <p>退运费 <?= cash($refund['freight_amount']) ?> · <?= e(Commerce::FREIGHT_PAYERS[$refund['freight_payer']]) ?>
+                        <?= $refund['status'] === 'rejected' ? ' · 未生效' : '' ?> · <?= e($refund['freight_note']) ?></p>
+                <?php endif; ?>
                 <?php if (in_array($refund['status'], ['approved', 'refund_pending', 'refunded'], true)): ?>
                     <p>退款金额 <?= cash($refund['amount']) ?></p>
+                <?php endif; ?>
+                <?php if ($canSupport && $refund['shipping'] > 0 && $refund['freight_payer'] !== 'platform'
+                    && in_array($refund['status'], ['return_authorized', 'return_in_transit'], true)): ?>
+                    <?php $freightPayer = 'merchant'; require __DIR__ . '/freight_decision_form.php'; ?>
                 <?php endif; ?>
             </div>
             <?php if ($canSupport && $refund['status'] === 'pending'): ?>

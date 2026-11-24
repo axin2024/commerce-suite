@@ -335,7 +335,8 @@ final class Commerce
     public function merchantLedger(int $merchant): array
     {
         $actor = $this->shopActor($merchant, 'finance');
-        return $this->rows('SELECT id,merchant_order_id,kind,gross,commission,settlement_id,created_at
+        return $this->rows('SELECT id,merchant_order_id,kind,gross,commission,settlement_id,created_at,platform_freight,'
+            . self::LEDGER_NET . ' AS net
             FROM ledger WHERE shop_id=? ORDER BY id DESC LIMIT 100', [$actor['shop_id']]);
     }
 
