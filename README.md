@@ -157,6 +157,6 @@ php bin/sandbox-shipping.php 8080 demo WAYBILL-02 delivery-002
 - 创建自有运营账号时，通过环境变量 `COMMERCE_OPERATOR_PASSWORD` 传入密码，并运行 `php bin/commerce.php operator admin operator@example.com`。分别为运营、财务和出纳创建独立账号，角色为 `admin`、`finance`、`payout`。
 - 在独立、库名以 `_test` 结尾的 MySQL 库设置 `APP_DEMO=1` 并执行迁移，然后运行 `php tests/integration.php`。并发库存用例需要 CLI 支持 `proc_open`。
 - 启动带种子数据的本机演示后，可用 `python tests/web_smoke.py` 验证各角色通过网页完成交易。为应用和测试进程配置支付、签收、退款三个沙箱密钥即可覆盖签名回执。
-- 支付、退款和签收回放使用独立演示数据库。真实支付网关、物流承运商适配、银行接口及第三方渠道订单同步待接入。
+- 支付、退款和签收回放使用独立演示数据库。外部服务接入现状见[支持范围](SUPPORT.md)。
 
-[架构与业务规则](docs/architecture.md) · [部署与恢复](docs/deployment.md) · [容量验收与复现](docs/capacity.md) · [Apache License 2.0](LICENSE)
+[架构与业务规则](docs/architecture.md) · [部署与恢复](docs/deployment.md) · [容量验收与复现](docs/capacity.md) · [参与贡献](CONTRIBUTING.md) · [支持范围](SUPPORT.md) · [Apache License 2.0](LICENSE)
