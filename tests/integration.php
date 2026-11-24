@@ -1174,6 +1174,74 @@ same([700, 800], [$couponFreight['shops'][$northShop]['shipping'], $couponFreigh
 same([$freightSix, $freightFive, $freightFour, $freightThree, $freightTwo, $freightOne],
     array_map('intval', array_column($app->merchantFreightHistory($north), 'id')), 'history maintains every published revision');
 
+$marketingNorth = $app->reviewSku($admin, $app->submitSku($north, 0, "MKT-N-$tag", '活动分摊样例甲', 10001, 4,
+    $bags, '活动分摊样例甲', '', '', true, true), true);
+$marketingPond = $app->reviewSku($admin, $app->submitSku($pond, 0, "MKT-P-$tag", '活动分摊样例乙', 10003, 4,
+    $bags, '活动分摊样例乙', '', '', true, true), true);
+$promoQuote = static fn(Commerce $market, int $customer, ?int $coupon = null): array =>
+    $market->quote($customer, [$marketingPond => 1, $marketingNorth => 1], 'store', '', $coupon, $bothLocations);
+$percentCode = "percent-$tag";
+denied(fn() => $app->publishPromotion($north, $percentCode, '越权发布', 20000, 3000, true, true,
+    strategy: PromotionStrategies::PERCENTAGE, rateBps: 1250), 'only admin can publish percentage promotions');
+denied(fn() => $app->publishPromotion($admin, $percentCode, '越界比例', 20000, 3000, true, true,
+    strategy: PromotionStrategies::PERCENTAGE, rateBps: 10001), 'percentage reductions are at most one hundred percent');
+denied(fn() => $app->publishPromotion($admin, $percentCode, '固定金额带比例', 20000, 3000, true, true, rateBps: 1250),
+    'fixed reduction does not accept rate parameters');
+$percentRevision = $app->publishPromotion($admin, $percentCode, '跨店比例券', 20000, 3000, true, true,
+    $bags, refundCoupon: true, strategy: PromotionStrategies::PERCENTAGE, rateBps: 1250);
+$percentCoupon = (int) $app->rows('SELECT id FROM promotions WHERE code=?', [$percentCode])[0]['id'];
+same(true, $app->claimCoupon($buyer, $percentCoupon), 'a buyer claims the published percentage revision');
+denied(fn() => $app->quote($buyer, [$marketingNorth => 2], 'store', '', $percentCoupon, $northLocations),
+    'reaching the percentage threshold in one shop is insufficient');
+$percentQuote = $promoQuote($app, $buyer, $percentCoupon);
+same([2500, 17504, 1249, 1251], [$percentQuote['discount'], $percentQuote['total'],
+    $percentQuote['items'][$marketingNorth]['discount'], $percentQuote['items'][$marketingPond]['discount']],
+    'round percentage to whole cents then distribute the final cent by SKU order');
+$currentPercent = $app->publishPromotion($admin, $percentCode, '比例券新版', 10000, 1800, true, true,
+    $bags, strategy: PromotionStrategies::PERCENTAGE, rateBps: 1000);
+$app->claimCoupon($otherBuyer, $percentCoupon);
+$newPercentQuote = $promoQuote($app, $otherBuyer, $percentCoupon);
+same([$currentPercent, 1800], [$newPercentQuote['promotion']['revision_id'], $newPercentQuote['discount']],
+    'a later claim receives the new rate and cap');
+$percentOrder = $app->place($buyer, $percentQuote['token']);
+$percentOrderRow = $app->rows('SELECT promotion_revision_id,discount,total FROM orders WHERE id=?', [$percentOrder])[0];
+same([$percentRevision, 2500, 17504], array_map('intval', array_values($percentOrderRow)),
+    'placing a claimed quote preserves the original version and amount after republishing');
+$app->demoPay($buyer, $percentOrder, "percent-payment-$tag", 17504);
+$percentRefunds = $prepareCouponReturns($percentOrder, $buyer);
+same([8752, 8752], array_column($percentRefunds, 3), 'returns use settled line amounts for the old policy');
+foreach ($percentRefunds as $percentRefund) {
+    $confirmCouponReturn($percentRefund);
+}
+same('available', $couponState($buyer, $percentCoupon), 'full refund restores the original percentage coupon');
+$restoredPercent = $promoQuote($app, $buyer, $percentCoupon);
+same([$percentRevision, 2500], [$restoredPercent['promotion']['revision_id'], $restoredPercent['discount']],
+    'restored coupon retains the old percentage rule');
+
+$strategyApp = new Commerce($db, promotionStrategies: new PromotionStrategies(require __DIR__ . '/../examples/promotion-steps.php'));
+$stepsCode = "steps-$tag";
+$stepsRevision = $strategyApp->publishPromotion($admin, $stepsCode, '阶梯自动优惠', 10000, 2300, false, true,
+    $bags, strategy: 'threshold_steps_v1', rateBps: 1250);
+$stepsId = (int) $app->rows('SELECT id FROM promotions WHERE code=?', [$stepsCode])[0]['id'];
+$stepsQuote = $promoQuote($strategyApp, $buyer);
+same([$stepsRevision, 2300, 17704], [$stepsQuote['promotion']['revision_id'], $stepsQuote['discount'], $stepsQuote['total']],
+    'two complete steps reach the configured cap and win the automatic offer');
+denied(fn() => $promoQuote($app, $buyer), 'eligible automatic offers cannot fall back when an installed strategy is removed');
+$strategyApp->publishPromotion($admin, $stepsCode, '同价新版本', 10000, 2300, false, true,
+    $bags, strategy: 'threshold_steps_v1', rateBps: 1250);
+denied(fn() => $strategyApp->place($buyer, $stepsQuote['token']), 'an automatic revision change invalidates an equal-price old quote');
+$strategyApp->setPromotionEnabled($admin, $stepsId, false);
+$overLimit = new Commerce($db, promotionStrategies: new PromotionStrategies([
+    'over_limit_v1' => ['label' => '超过上限的测试计算器', 'uses_rate' => false,
+        'discount' => static fn(int $goods, int $threshold, int $limit): int => $limit + 1],
+]));
+$overLimitCode = "overlimit-$tag";
+$overLimit->publishPromotion($admin, $overLimitCode, '扩展拒绝样例', 10000, 2500, true, true,
+    $bags, strategy: 'over_limit_v1');
+$overLimitId = (int) $app->rows('SELECT id FROM promotions WHERE code=?', [$overLimitCode])[0]['id'];
+$overLimit->claimCoupon($buyer, $overLimitId);
+denied(fn() => $promoQuote($overLimit, $buyer, $overLimitId), 'the allocator rejects discount output larger than the declared cap');
+
 $testChannel = ['checkout' => static fn(array $details): string => 'https://checkout.example.test/pay?' . http_build_query($details),
     'verify' => static fn(string $body, array $headers): array => json_decode($body, true, 4, JSON_THROW_ON_ERROR)];
 $definitions = ['channel-a' => $testChannel, 'channel-b' => $testChannel];

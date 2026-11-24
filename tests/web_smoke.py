@@ -576,3 +576,45 @@ if 'value="consolidation_v1"' in freight_form:
                            north.load("/?page=merchant_orders"), re.S)[0]
     assert "¥7.01" in plugin_row and f"<td>#{plugin_revision}</td>" in plugin_row
 print("Freight policy web flow passed: owner publishing, stale quote, free shipping, and frozen order freight.")
+
+strategy_buyer = Session()
+strategy_buyer.submit("/?page=account", "register", email=f"promotion-{uuid4().hex}@example.test",
+                      password="CommerceFixture-2026")
+promotion_page = "/?page=platform"
+strategy_sale = {
+    "code": "web-percent", "name": "比例券验收", "threshold": "200.00", "discount": "30.00",
+    "requires_claim": "1", "stack_member_price": "1", "discount_strategy": "percentage_v1", "rate_percent": "12.50",
+}
+assert "12.5%" in admin.submit(promotion_page, "promotion_publish", **strategy_sale)
+offer = re.search(r"<strong>比例券验收</strong>.*?</form>", strategy_buyer.load(catalog_a), re.S)[0]
+assert "最高减 ¥30.00" in offer and "12.5%" in offer
+coupon_id = extract(offer, "promotion")
+assert "优惠券已领取" in strategy_buyer.submit(catalog_a, "claim_coupon", promotion=coupon_id)
+strategy_buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+cart = strategy_buyer.load("/?page=cart")
+too_small = strategy_buyer.submit("/?page=cart", "quote", channel="store", coupon=coupon_id, **pickup_choices(cart))
+assert "当前商品未达到活动门槛" in too_small
+strategy_buyer.submit(catalog_b, "cart", product=part_b, quantity=1)
+cart = strategy_buyer.load("/?page=cart")
+discounted = strategy_buyer.submit("/?page=cart", "quote", channel="store", coupon=coupon_id, **pickup_choices(cart))
+assert "−¥25.00" in discounted and "¥175.00" in discounted
+admin.submit(promotion_page, "promotion_publish", **{**strategy_sale, "discount": "10.00", "rate_percent": "5.00"})
+old_coupon_terms = strategy_buyer.load("/?page=account")
+assert "12.5%" in old_coupon_terms and "¥30.00" in old_coupon_terms
+placed = strategy_buyer.submit("/?page=cart", "place", token=extract(discounted, "token"))
+assert "优惠 ¥25.00" in placed and "¥175.00" in placed
+
+if 'value="threshold_steps_v1"' in admin.load(promotion_page):
+    tiered = {**strategy_sale, "code": "web-steps", "name": "阶梯优惠验收", "threshold": "100.00", "discount": "22.00",
+              "discount_strategy": "threshold_steps_v1", "requires_claim": "0"}
+    assert "按满额档位累计优惠" in admin.submit(promotion_page, "promotion_publish", **tiered)
+    strategy_buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+    strategy_buyer.submit(catalog_b, "cart", product=part_b, quantity=1)
+    cart = strategy_buyer.load("/?page=cart")
+    step_quote = strategy_buyer.submit("/?page=cart", "quote", channel="store", **pickup_choices(cart))
+    assert "阶梯优惠验收" in step_quote and "−¥22.00" in step_quote and "¥178.00" in step_quote
+    admin.submit(promotion_page, "promotion_publish", **tiered)
+    old_step_quote = strategy_buyer.submit("/?page=cart", "place", token=extract(step_quote, "token"))
+    assert "请重新报价" in old_step_quote
+    print("Tiered promotion extension passed: capped checkout and stale revision rejection.")
+print("Promotion strategy web flow passed: publishing, scoped checkout, pinned coupon terms, and rule changes.")

@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 trait PromotionOperations
 {
+    public function promotionStrategyLabels(): array
+    {
+        return $this->promotionStrategies->labels();
+    }
+
     public function setMemberLevel(int $admin, string $email, string $level): void
     {
         $this->actor($admin, 'admin');
@@ -26,6 +31,7 @@ trait PromotionOperations
     public function publishPromotion(
         int $admin, string $code, string $name, int $threshold, int $discount,
         bool $requiresClaim, bool $stackMemberPrice, ?int $category = null, string $end = '', bool $refundCoupon = false,
+        string $strategy = PromotionStrategies::FIXED, ?int $rateBps = null,
     ): int {
         $this->actor($admin, 'admin');
         $code = trim($code);
@@ -33,8 +39,11 @@ trait PromotionOperations
         $end = trim($end);
         if (!preg_match('/^[a-z0-9][a-z0-9_-]{2,47}$/D', $code) || $name === '' || strlen($name) > 120
             || $threshold < 1 || $threshold > 300_000_000_000 || $discount < 1
-            || $discount > 100_000_000 || $discount > $threshold) {
+            || $discount > 100_000_000 || ($strategy === PromotionStrategies::FIXED && $discount > $threshold)) {
             throw new RuleViolation('请检查活动编号、名称、门槛和减免金额。');
+        }
+        if (!$this->promotionStrategies->accepts($strategy, $rateBps)) {
+            throw new RuleViolation('请选择可用的优惠方式并检查优惠比例。');
         }
         if ($refundCoupon && !$requiresClaim) {
             throw new RuleViolation('仅领券活动可设置全单退款退券。');
@@ -44,17 +53,19 @@ trait PromotionOperations
             throw new RuleViolation('结束时间须为未来的 UTC 日期和时间。');
         }
         $endsAt = $lastMinute?->format('Y-m-d H:i:s');
+        $label = $this->promotionStrategyLabels()[$strategy];
         return $this->transaction(function () use ($admin, $code, $name, $threshold, $discount,
-            $requiresClaim, $stackMemberPrice, $category, $endsAt, $refundCoupon): int {
+            $requiresClaim, $stackMemberPrice, $category, $endsAt, $refundCoupon, $strategy, $rateBps, $label): int {
             if ($category !== null && !$this->one('SELECT id FROM product_categories WHERE id=?', [$category])) {
                 throw new RuleViolation('活动分类不存在。');
             }
             $this->query('INSERT INTO promotions (code) VALUES (?) ON DUPLICATE KEY UPDATE code=code', [$code]);
             $promotion = $this->one('SELECT id FROM promotions WHERE code=? FOR UPDATE', [$code]);
             $id = $this->insert('INSERT INTO promotion_revisions
-                (promotion_id,name,category_id,threshold,discount,requires_claim,stack_member_price,ends_at,published_by,refund_coupon)
-                VALUES (?,?,?,?,?,?,?,?,?,?)', [$promotion['id'], $name, $category, $threshold, $discount,
-                    (int) $requiresClaim, (int) $stackMemberPrice, $endsAt, $admin, (int) $refundCoupon]);
+                (promotion_id,name,category_id,threshold,discount,requires_claim,stack_member_price,ends_at,published_by,refund_coupon,
+                 discount_strategy,rate_bps,strategy_label)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', [$promotion['id'], $name, $category, $threshold, $discount,
+                    (int) $requiresClaim, (int) $stackMemberPrice, $endsAt, $admin, (int) $refundCoupon, $strategy, $rateBps, $label]);
             $this->query('UPDATE promotions SET current_revision_id=? WHERE id=?', [$id, $promotion['id']]);
             $this->audit($admin, 'promotion.published', (int) $promotion['id'], ['revision_id' => $id]);
             return $id;
@@ -101,7 +112,8 @@ trait PromotionOperations
     public function promotionOffers(): array
     {
         return $this->rows('SELECT p.id,p.code,r.name,r.threshold,r.discount,r.requires_claim,r.stack_member_price,
-            r.ends_at,c.name AS category_name FROM promotions p JOIN promotion_revisions r ON r.id=p.current_revision_id
+            r.ends_at,r.discount_strategy,r.rate_bps,r.strategy_label,c.name AS category_name
+            FROM promotions p JOIN promotion_revisions r ON r.id=p.current_revision_id
             LEFT JOIN product_categories c ON c.id=r.category_id
             WHERE p.enabled=1 AND (r.ends_at IS NULL OR r.ends_at>UTC_TIMESTAMP()) ORDER BY p.id');
     }
@@ -110,6 +122,7 @@ trait PromotionOperations
     {
         $this->actor($buyer, 'buyer');
         return $this->rows("SELECT p.id,r.name,r.discount,r.threshold,r.ends_at,r.stack_member_price,r.refund_coupon,
+            r.discount_strategy,r.rate_bps,r.strategy_label,
             CASE WHEN c.redeemed_at IS NOT NULL THEN 'used' WHEN c.order_id IS NOT NULL THEN 'held'
                  WHEN p.enabled=0 OR r.ends_at<=UTC_TIMESTAMP() THEN 'unavailable' ELSE 'available' END AS status
             FROM coupon_claims c JOIN promotions p ON p.id=c.promotion_id JOIN promotion_revisions r ON r.id=c.revision_id
@@ -182,10 +195,17 @@ trait PromotionOperations
                 $eligible[$id] = $weight;
             }
         }
-        if (count($eligibleShops) < 2 || array_sum($eligible) < (int) $campaign['threshold']) {
+        $eligibleGoods = array_sum($eligible);
+        $threshold = (int) $campaign['threshold'];
+        if (count($eligibleShops) < 2 || $eligibleGoods < $threshold) {
             return null;
         }
-        $amount = (int) $campaign['discount'];
+        $rate = $campaign['rate_bps'] === null ? null : (int) $campaign['rate_bps'];
+        $amount = $this->promotionStrategies->discount($campaign['discount_strategy'], $eligibleGoods, $threshold,
+            (int) $campaign['discount'], $rate);
+        if ($amount === 0) {
+            return null;
+        }
         return [
             'promotion' => ['id' => (int) $campaign['promotion_id'], 'revision_id' => (int) $campaign['id'],
                 'name' => $campaign['name'], 'claimed' => (bool) $campaign['requires_claim']],

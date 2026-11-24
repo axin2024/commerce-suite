@@ -1,6 +1,6 @@
 <?php
 $campaigns = $app->rows('SELECT p.id,p.code,p.enabled,r.id AS revision,r.name,r.threshold,r.discount,r.requires_claim,
-    r.stack_member_price,r.refund_coupon,r.ends_at,c.name AS category_name
+    r.stack_member_price,r.refund_coupon,r.ends_at,r.discount_strategy,r.rate_bps,r.strategy_label,c.name AS category_name
     FROM promotions p JOIN promotion_revisions r ON r.id=p.current_revision_id
     LEFT JOIN product_categories c ON c.id=r.category_id ORDER BY p.id DESC LIMIT 100');
 $categories = $app->categories();
@@ -39,7 +39,13 @@ $loyaltyPolicy = $app->loyaltyPolicy();
             <label>活动编号<input name="code" maxlength="48" pattern="[a-z0-9][a-z0-9_-]{2,47}" required></label>
             <label>活动名称<input name="name" maxlength="120" required></label>
             <label>门槛（元）<input name="threshold" inputmode="decimal" required></label>
-            <label>减免（元）<input name="discount" inputmode="decimal" required></label>
+            <label>优惠方式<select name="discount_strategy">
+                <?php foreach ($app->promotionStrategyLabels() as $strategy => $label): ?>
+                    <option value="<?= e($strategy) ?>"><?= e($label) ?></option>
+                <?php endforeach; ?>
+            </select></label>
+            <label>固定减免或优惠上限（元）<input name="discount" inputmode="decimal" required></label>
+            <label>优惠比例（%）<input name="rate_percent" inputmode="decimal" placeholder="比例类活动填写"></label>
             <label>活动分类<select name="category">
                 <option value="">全场</option>
                 <?php foreach ($categories as $category): ?><option value="<?= e($category['id']) ?>"><?= e($category['name']) ?></option><?php endforeach; ?>
@@ -58,7 +64,7 @@ $loyaltyPolicy = $app->loyaltyPolicy();
         <div class="record">
             <div><strong><?= e($campaign['name']) ?></strong> <?= $campaign['enabled'] ? '启用' : '停用' ?>
                 <p><?= e($campaign['code']) ?> · 版本 #<?= e($campaign['revision']) ?> · <?= e($campaign['category_name'] ?? '全场') ?>
-                    · 满 <?= cash($campaign['threshold']) ?> 减 <?= cash($campaign['discount']) ?></p>
+                    · <?= e(promotionTerms($campaign)) ?></p>
                 <p class="muted"><?= $campaign['requires_claim'] ? '领券使用' : '自动匹配' ?>
                     · <?= $campaign['stack_member_price'] ? '可叠加会员价' : '活动行按标价' ?>
                     <?= $campaign['refund_coupon'] ? ' · 全单退完返券' : '' ?>

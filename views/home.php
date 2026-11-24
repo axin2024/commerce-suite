@@ -22,7 +22,7 @@ $claimed = $role === 'buyer' ? array_column($app->buyerCoupons((int) $user['id']
     <?php foreach ($offers as $offer): ?>
         <div class="record">
             <div><strong><?= e($offer['name']) ?></strong>
-                <p class="muted"><?= e($offer['category_name'] ?? '全场') ?> · 满 <?= cash($offer['threshold']) ?> 减 <?= cash($offer['discount']) ?>
+                <p class="muted"><?= e($offer['category_name'] ?? '全场') ?> · <?= e(promotionTerms($offer)) ?>
                     <?= $offer['stack_member_price'] ? ' · 可叠加会员价' : ' · 活动商品按标价计算门槛' ?></p>
             </div>
             <?php if (!$offer['requires_claim']): ?><span>结算自动匹配</span>

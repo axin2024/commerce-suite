@@ -18,6 +18,7 @@ try {
     assertSchemaReady(database());
     FreightStrategies::fromEnvironment();
     PaymentChannels::fromEnvironment();
+    PromotionStrategies::fromEnvironment();
     $status = 'ready';
 } catch (Throwable) {
     http_response_code(503);

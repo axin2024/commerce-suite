@@ -84,6 +84,20 @@ function cash(string|int|null $cents): string
     return ($num < 0 ? '−' : '') . '¥' . $whole . '.' . str_pad((string) abs($num % 100), 2, '0', STR_PAD_LEFT);
 }
 
+function promotionTerms(array $campaign): string
+{
+    $terms = '满 ' . cash($campaign['threshold']);
+    if ($campaign['discount_strategy'] === PromotionStrategies::FIXED) {
+        return $terms . ' 减 ' . cash($campaign['discount']);
+    }
+    $terms .= ' · ' . $campaign['strategy_label'];
+    if ($campaign['rate_bps'] !== null) {
+        $rate = rtrim(rtrim(number_format((int) $campaign['rate_bps'] / 100, 2, '.', ''), '0'), '.');
+        $terms .= ' ' . $rate . '%';
+    }
+    return $terms . ' · 最高减 ' . cash($campaign['discount']);
+}
+
 function field(string $name, string|int $value): string
 {
     return '<input type="hidden" name="' . e($name) . '" value="' . e($value) . '">';
@@ -316,7 +330,8 @@ try {
                     $category = input('category') === '' ? null : number('category');
                     $app->publishPromotion($id, input('code'), input('name'), cents('threshold'), cents('discount'),
                         input('requires_claim') === '1', input('stack_member_price') === '1', $category, input('ends_at'),
-                        input('refund_coupon') === '1');
+                        input('refund_coupon') === '1', input('discount_strategy', PromotionStrategies::FIXED),
+                        input('rate_percent') === '' ? null : cents('rate_percent'));
                     break;
                 case 'promotion_access':
                     $enabled = input('enabled');
