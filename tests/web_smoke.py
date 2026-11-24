@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -22,16 +23,27 @@ SHIPPING_SECRET = os.environ.get("COMMERCE_SANDBOX_SHIPPING_SECRET")
 REFUND_SECRET = os.environ.get("COMMERCE_SANDBOX_REFUND_SECRET")
 
 
-def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.php", secret=SANDBOX_SECRET):
+def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.php", secret=SANDBOX_SECRET,
+            abandon_response=False):
     body = json.dumps(payload, separators=(",", ":")).encode()
     timestamp = str(int(time.time()) if timestamp is None else timestamp)
     if signature is None:
         signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    request = urllib.request.Request(BASE + "/" + endpoint, data=body, headers={
+    headers = {
         "Content-Type": "application/json",
         "X-Commerce-Timestamp": timestamp,
         "X-Commerce-Signature": signature,
-    })
+    }
+    if abandon_response:
+        url = urllib.parse.urlsplit(BASE + "/" + endpoint)
+        connection_class = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        connection = connection_class(url.hostname, url.port, timeout=8)
+        try:
+            connection.request("POST", url.path, body=body, headers=headers)
+        finally:
+            connection.close()
+        return
+    request = urllib.request.Request(BASE + "/" + endpoint, data=body, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             return response.status, json.load(response)
@@ -91,9 +103,18 @@ if SANDBOX_SECRET:
     payload = {"payment_token": token_match[1], "reference": f"web-{uuid4().hex}", "currency": "CNY", "amount": 18000}
     assert webhook(payload, signature="0" * 64) == (401, {"error": "invalid_signature"})
     assert webhook(payload, timestamp=int(time.time()) - 600) == (401, {"error": "invalid_signature"})
+    webhook(payload, abandon_response=True)
+    recorded = f"{payload['reference']} · 已入账"
+    deadline = time.monotonic() + 8
+    while recorded not in finance.load("/?page=platform"):
+        assert time.monotonic() < deadline, "capture was not recorded before retry"
+        time.sleep(0.1)
     status, accepted = webhook(payload)
     assert status == 200 and accepted["status"] == "accepted" and accepted["payment_id"]
-    assert webhook(payload) == webhook(payload) == (200, accepted)
+    assert webhook(payload) == (200, accepted)
+    receipt_page = finance.load(f"/?page=platform&receipt={accepted['receipt_id']}")
+    assert receipt_page.count(recorded) == 1 and f"订单 #{order_id} ·" in receipt_page
+    print("Payment recovery web flow passed: abandoned response, persisted receipt, and two retries.")
     assert webhook({**payload, "amount": 18001}) == (409, {"error": "receipt_conflict"})
     status, duplicate = webhook({**payload, "reference": f"duplicate-{uuid4().hex}"})
     assert status == 200 and duplicate["status"] == "refund_required"
@@ -178,6 +199,7 @@ if REFUND_SECRET:
     settlement = finance.load("/?page=platform")
     assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80" in settlement
     month = datetime.now(timezone.utc).strftime("%Y-%m")
+    north_shop = re.search(r'page=platform&amp;shop=(\d+)#ledger">北仓选物</a>', settlement)[1]
     pond_shop = re.search(r'page=platform&amp;shop=(\d+)#ledger">池畔工房</a>', settlement)[1]
     preview_page = f"/?page=settlements&shop={pond_shop}&period={month}"
     preview = finance.load(preview_page)
@@ -199,6 +221,7 @@ if REFUND_SECRET:
             raise AssertionError("unexpected access to " + path)
 
     assert_forbidden(payout, detail_path)
+    assert_forbidden(north, detail_path)
     assert_forbidden(north, csv_path)
     assert_forbidden(payout, csv_path)
     assert "复核金额不符" in finance.submit(detail_path, "settlement_review", batch=batch, verified_amount=6481)
@@ -214,6 +237,29 @@ if REFUND_SECRET:
     row, = csv_rows
     assert row["shop_id"] == pond_shop and row["period_utc"] == month and row["currency"] == "CNY"
     assert (row["gross_minor"], row["commission_minor"], row["net_minor"]) == ("7200", "720", "6480")
+
+    north_preview_path = f"/?page=settlements&shop={north_shop}&period={month}"
+    north_freeze, = forms(finance.load(north_preview_path), "settlement_freeze")
+    north_frozen = finance.submit(north_preview_path, "settlement_freeze", shop=north_shop, period=month, currency="CNY",
+                                  preview_hash=extract(north_freeze, "preview_hash"))
+    north_batch = extract(north_frozen, "batch")
+    north_path = f"/?page=settlements&batch={north_batch}"
+    north_csv = f"{north_path}&download=csv"
+    assert "零额结清" in finance.submit(north_path, "settlement_review", batch=north_batch, verified_amount=0)
+    north_rows = list(csv.DictReader(north.load(north_csv).splitlines()))
+    assert all(row["shop_id"] == north_shop for row in north_rows)
+    assert [(row["kind"], row["gross_minor"], row["commission_minor"], row["net_minor"]) for row in north_rows] == [
+        ("sale", "10800", "1080", "9720"), ("refund", "-10800", "-1080", "-9720"),
+    ]
+    for merchant, allowed_batch, denied_batch, denied_shop in (
+        (north, north_batch, batch, pond_shop), (pond, batch, north_batch, north_shop),
+    ):
+        merchant_list = merchant.load("/?page=settlements")
+        assert f"&amp;batch={allowed_batch}\"" in merchant_list and f"&amp;batch={denied_batch}\"" not in merchant_list
+        for other_path in (f"/?page=settlements&shop={denied_shop}",
+                           f"/?page=settlements&batch={denied_batch}",
+                           f"/?page=settlements&batch={denied_batch}&download=csv"):
+            assert_forbidden(merchant, other_path)
     print("Return refund web flow passed: review, parcel tracking, inspection, signed receipt, and settlement.")
     print("Settlement web flow passed: monthly preview, finance review, cashier record, role scope, and CSV export.")
     if SANDBOX_SECRET:

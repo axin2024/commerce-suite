@@ -163,4 +163,4 @@ php bin/sandbox-shipping.php 8080 demo WAYBILL-02 delivery-002
 - 启动带种子数据的本机演示后，可用 `python tests/web_smoke.py` 验证各角色通过网页完成交易。为应用和测试进程配置支付、签收、退款三个沙箱密钥即可覆盖签名回执。
 - 支付、退款和签收回放使用独立演示数据库。外部服务接入现状见[支持范围](SUPPORT.md)。
 
-[架构与业务规则](docs/architecture.md) · [部署与恢复](docs/deployment.md) · [容量验收与复现](docs/capacity.md) · [参与贡献](CONTRIBUTING.md) · [支持范围](SUPPORT.md) · [Apache License 2.0](LICENSE)
+[架构与业务规则](docs/architecture.md) · [部署与恢复](docs/deployment.md) · [业务验收](docs/acceptance.md) · [容量验收](docs/capacity.md) · [参与贡献](CONTRIBUTING.md) · [支持范围](SUPPORT.md) · [Apache License 2.0](LICENSE)
