@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    environment:
+      COMMERCE_DSN: mysql:host=db;dbname=commerce_suite;charset=utf8mb4
+      COMMERCE_DB_USER: commerce
+      COMMERCE_DB_PASSWORD: ${COMMERCE_DB_PASSWORD:?set COMMERCE_DB_PASSWORD}
+      APP_DEMO: ${APP_DEMO:-0}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: commerce_suite
+      MYSQL_USER: commerce
+      MYSQL_PASSWORD: ${COMMERCE_DB_PASSWORD:?set COMMERCE_DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - commerce-data:/var/lib/mysql
+volumes:
+  commerce-data:
