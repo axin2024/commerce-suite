@@ -19,7 +19,6 @@ jobs:
           - 3306/tcp
         options: --health-cmd="mysqladmin ping -h 127.0.0.1 --silent" --health-interval=5s --health-timeout=3s --health-retries=30
     env:
-      COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
       COMMERCE_DB_USER: root
       COMMERCE_DB_PASSWORD: ci-test-only
       APP_DEMO: '1'
@@ -31,5 +30,9 @@ jobs:
           extensions: pdo_mysql
           coverage: none
       - run: find src public bin views tests -name '*.php' -print0 | xargs -0 -n1 php -l
-      - run: php bin/commerce.php migrate
-      - run: php tests/integration.php
+      - name: Run MySQL integration checks
+        env:
+          COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
+        run: |
+          php bin/commerce.php migrate
+          php tests/integration.php
