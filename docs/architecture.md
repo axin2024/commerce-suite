@@ -8,6 +8,7 @@
 - `src/PromotionOperations.php` 处理会员等级、活动发布、领券和计价。券绑定领取时的活动版，活动当前版供新领券或自动匹配使用。
 - `src/InventoryOperations.php` 分配发货仓、保存订单行配额，按仓处理预留、释放及扣减。
 - `src/ShippingOperations.php` 登记仓内包裹，以签收事件推进子订单状态。
+- `src/MerchantOrderHistory.php` 按当前店铺与 UTC 日期查询子订单。用母订单时间和子订单编号降序定位下一页，同秒下的多张订单也有固定顺序。
 - `src/PickupOperations.php` 管理自提门店与库存仓，处理备货、买家领码及门店核销。
 - `src/PreorderOperations.php` 管理 SKU 的预售额度、截单时间、到货和库存转换。
 - `src/ReturnOperations.php` 跟踪退货申请、寄回、验收和渠道退款，按原订单行分摊退款与佣金冲正。

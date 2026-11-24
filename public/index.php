@@ -442,6 +442,7 @@ try {
         'cart' => ['buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
         'settlements' => ['admin', 'finance', 'merchant', 'payout'],
         'channel_bills' => ['finance', 'merchant'],
+        'merchant_orders' => ['merchant'],
     ];
     if ($page === 'settlements' && ($_GET['download'] ?? '') === 'csv') {
         $batch = filter_var($_GET['batch'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
@@ -471,7 +472,8 @@ try {
     if (!isset($scope[$page])) {
         http_response_code(404);
         $page = 'home';
-    } elseif (!in_array($role, $scope[$page], true)) {
+    } elseif (!in_array($role, $scope[$page], true)
+        || ($page === 'merchant_orders' && !Commerce::canManage($user, 'fulfillment'))) {
         http_response_code(403);
         $page = 'account';
     }

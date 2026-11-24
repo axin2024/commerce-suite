@@ -1,0 +1,283 @@
+{
+  "inventory": {
+    "run": "capacity-fb6b6a570a",
+    "status": "passed",
+    "environment": {
+      "mysql": "8.0.46",
+      "max_connections": 151,
+      "innodb_buffer_pool_bytes": 134217728,
+      "php": "8.2.30",
+      "os": "Windows"
+    },
+    "shop_id": 1,
+    "product_id": 1,
+    "before": {
+      "stock": 10,
+      "reserved": 0,
+      "warehouse_stock": 10,
+      "warehouse_reserved": 0
+    },
+    "after": {
+      "stock": 10,
+      "reserved": 10,
+      "warehouse_stock": 10,
+      "warehouse_reserved": 10
+    },
+    "persisted": {
+      "linked_orders": 10,
+      "unpaid_orders": 10,
+      "held_units": "10"
+    },
+    "filled_quotes": 10,
+    "ready_workers": 100,
+    "outcomes": {
+      "sold_out": 90,
+      "reserved": 10
+    },
+    "barrier_utc": "2026-11-24T10:29:11+00:00",
+    "setup_seconds": 22.065,
+    "measure_ms": 443.528,
+    "requests": [
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":3,"start_offset_ms":13.35,"elapsed_ms":186.748},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":4,"start_offset_ms":45.768,"elapsed_ms":317.453},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":5,"start_offset_ms":27.412,"elapsed_ms":240.057},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":6,"start_offset_ms":32.095,"elapsed_ms":270.4},
+      {"outcome":"reserved","order_id":7,"buyer_id":7,"start_offset_ms":5.971,"elapsed_ms":135.329},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":8,"start_offset_ms":34.781,"elapsed_ms":280.918},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":9,"start_offset_ms":57.515,"elapsed_ms":355.954},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":10,"start_offset_ms":33.094,"elapsed_ms":271.917},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":11,"start_offset_ms":37.013,"elapsed_ms":280.88},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":12,"start_offset_ms":24.017,"elapsed_ms":233.068},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":13,"start_offset_ms":55.738,"elapsed_ms":349.645},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":14,"start_offset_ms":34.604,"elapsed_ms":275.645},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":15,"start_offset_ms":58.861,"elapsed_ms":366.974},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":16,"start_offset_ms":49.519,"elapsed_ms":333.242},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":17,"start_offset_ms":31.721,"elapsed_ms":268.483},
+      {"outcome":"reserved","order_id":3,"buyer_id":18,"start_offset_ms":6.089,"elapsed_ms":62.749},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":19,"start_offset_ms":20.705,"elapsed_ms":228.199},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":20,"start_offset_ms":41.768,"elapsed_ms":308.244},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":21,"start_offset_ms":38.214,"elapsed_ms":296.12},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":22,"start_offset_ms":20.706,"elapsed_ms":233.645},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":23,"start_offset_ms":37.934,"elapsed_ms":285.084},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":24,"start_offset_ms":40.924,"elapsed_ms":303.597},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":25,"start_offset_ms":6.026,"elapsed_ms":253.658},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":26,"start_offset_ms":58.288,"elapsed_ms":360.339},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":27,"start_offset_ms":28.634,"elapsed_ms":252.911},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":28,"start_offset_ms":29.29,"elapsed_ms":257.284},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":29,"start_offset_ms":16.602,"elapsed_ms":206.431},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":30,"start_offset_ms":38.454,"elapsed_ms":287.127},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":31,"start_offset_ms":14.151,"elapsed_ms":213.021},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":32,"start_offset_ms":40.835,"elapsed_ms":298.366},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":33,"start_offset_ms":55.764,"elapsed_ms":347.1},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":34,"start_offset_ms":27.641,"elapsed_ms":244.342},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":35,"start_offset_ms":19.532,"elapsed_ms":220.119},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":36,"start_offset_ms":50.96,"elapsed_ms":339.686},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":37,"start_offset_ms":36.969,"elapsed_ms":291.921},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":38,"start_offset_ms":34.81,"elapsed_ms":285.779},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":39,"start_offset_ms":31.415,"elapsed_ms":265.94},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":40,"start_offset_ms":41.097,"elapsed_ms":306.182},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":41,"start_offset_ms":60.685,"elapsed_ms":367.954},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":42,"start_offset_ms":17.416,"elapsed_ms":228.589},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":43,"start_offset_ms":33.666,"elapsed_ms":273.868},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":44,"start_offset_ms":52.298,"elapsed_ms":335.454},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":45,"start_offset_ms":46.587,"elapsed_ms":325.59},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":46,"start_offset_ms":11.719,"elapsed_ms":191.045},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":47,"start_offset_ms":28.359,"elapsed_ms":246.043},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":48,"start_offset_ms":28.057,"elapsed_ms":248.29},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":49,"start_offset_ms":38.403,"elapsed_ms":293.182},
+      {"outcome":"reserved","order_id":9,"buyer_id":50,"start_offset_ms":12.227,"elapsed_ms":168.172},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":51,"start_offset_ms":16.608,"elapsed_ms":198.058},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":52,"start_offset_ms":50.73,"elapsed_ms":392.798},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":53,"start_offset_ms":45.274,"elapsed_ms":323.405},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":54,"start_offset_ms":59.038,"elapsed_ms":364.162},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":55,"start_offset_ms":35.624,"elapsed_ms":276.83},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":56,"start_offset_ms":45.803,"elapsed_ms":334.052},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":57,"start_offset_ms":42.817,"elapsed_ms":312.262},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":58,"start_offset_ms":24.876,"elapsed_ms":240.377},
+      {"outcome":"reserved","order_id":5,"buyer_id":59,"start_offset_ms":5.962,"elapsed_ms":98.776},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":60,"start_offset_ms":55.659,"elapsed_ms":355.05},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":61,"start_offset_ms":44.245,"elapsed_ms":322.145},
+      {"outcome":"reserved","order_id":6,"buyer_id":62,"start_offset_ms":5.954,"elapsed_ms":116.524},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":63,"start_offset_ms":49.32,"elapsed_ms":336.006},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":64,"start_offset_ms":38.277,"elapsed_ms":298.874},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":65,"start_offset_ms":15.388,"elapsed_ms":193.017},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":66,"start_offset_ms":53.299,"elapsed_ms":339.501},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":67,"start_offset_ms":42.964,"elapsed_ms":309.481},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":68,"start_offset_ms":43.606,"elapsed_ms":316.951},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":69,"start_offset_ms":31.217,"elapsed_ms":260.157},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":70,"start_offset_ms":58.752,"elapsed_ms":362.239},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":71,"start_offset_ms":23.113,"elapsed_ms":415.045},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":72,"start_offset_ms":46.776,"elapsed_ms":328.399},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":73,"start_offset_ms":59.891,"elapsed_ms":371.869},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":74,"start_offset_ms":27.486,"elapsed_ms":242.163},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":75,"start_offset_ms":47.669,"elapsed_ms":329.715},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":76,"start_offset_ms":16.856,"elapsed_ms":216.989},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":77,"start_offset_ms":28.615,"elapsed_ms":250.096},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":78,"start_offset_ms":30.358,"elapsed_ms":253.548},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":79,"start_offset_ms":60.675,"elapsed_ms":374.84},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":80,"start_offset_ms":55.778,"elapsed_ms":352.446},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":81,"start_offset_ms":30.764,"elapsed_ms":258.537},
+      {"outcome":"reserved","order_id":8,"buyer_id":82,"start_offset_ms":6.231,"elapsed_ms":158.318},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":83,"start_offset_ms":15.705,"elapsed_ms":195.521},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":84,"start_offset_ms":39.946,"elapsed_ms":302.168},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":85,"start_offset_ms":24.126,"elapsed_ms":238.413},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":86,"start_offset_ms":56.829,"elapsed_ms":359.451},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":87,"start_offset_ms":31.34,"elapsed_ms":262.932},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":88,"start_offset_ms":18.072,"elapsed_ms":218.891},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":89,"start_offset_ms":54.307,"elapsed_ms":343.77},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":90,"start_offset_ms":53.717,"elapsed_ms":341.721},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":91,"start_offset_ms":33.999,"elapsed_ms":406.427},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":92,"start_offset_ms":54.408,"elapsed_ms":346.049},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":93,"start_offset_ms":42.779,"elapsed_ms":315.443},
+      {"outcome":"reserved","order_id":10,"buyer_id":94,"start_offset_ms":13.294,"elapsed_ms":183.556},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":95,"start_offset_ms":17.446,"elapsed_ms":202.008},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":96,"start_offset_ms":16.72,"elapsed_ms":213.522},
+      {"outcome":"reserved","order_id":1,"buyer_id":97,"start_offset_ms":6.191,"elapsed_ms":27.758},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":98,"start_offset_ms":13.556,"elapsed_ms":191.71},
+      {"outcome":"reserved","order_id":2,"buyer_id":99,"start_offset_ms":6.176,"elapsed_ms":42.705},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":100,"start_offset_ms":22.099,"elapsed_ms":229.658},
+      {"outcome":"reserved","order_id":4,"buyer_id":101,"start_offset_ms":6.176,"elapsed_ms":79.973},
+      {"outcome":"sold_out","message":"商品可用库存不足，请调整购买数量。","buyer_id":102,"start_offset_ms":20.719,"elapsed_ms":221.99}
+    ]
+  },
+  "order_history": {
+    "environment": {
+      "mysql": "8.0.46",
+      "max_connections": 151,
+      "innodb_buffer_pool_bytes": 134217728,
+      "php": "8.2.30",
+      "os": "Windows"
+    },
+    "fixture_utc": "2026-11-24T10:26:28+00:00",
+    "seed_seconds": 14.502,
+    "tenants": {
+      "main": {
+        "shop_id": 1,
+        "count": 100000
+      },
+      "other": {
+        "shop_id": 2,
+        "count": 25000
+      }
+    },
+    "scenarios": {
+      "history": {
+        "from": "2026-05-29",
+        "through": "2026-11-24",
+        "expected_ids": [
+          99901,99721,99541,99361,99181,99001,98821,98641,98461,98281,98101,97921,97741,97561,97381,97201,97021,96841,96661,96481,
+          96301,96121,95941,95761,95581,95401,95221,95041,94861,94681,94501,94321,94141,93961,93781,93601,93421,93241,93061,92881,
+          92701,92521,92341,92161,91981,91801,91621,91441,91261,91081,90901,90721,90541,90361,90181,90001,89821,89641,89461,89281,
+          89101,88921,88741,88561,88381,88201,88021,87841,87661,87481,87301,87121,86941,86761,86581,86401,86221,86041,85861,85681,
+          85501,85321,85141,84961,84781,84601,84421,84241,84061,83881,83701,83521,83341,83161,82981,82801,82621,82441,82261,82081
+        ]
+      },
+      "one_day": {
+        "from": "2026-11-24",
+        "through": "2026-11-24",
+        "expected_ids": [
+          99901,99721,99541,99361,99181,99001,98821,98641,98461,98281,98101,97921,97741,97561,97381,97201,97021,96841,96661,96481,
+          96301,96121,95941,95761,95581,95401,95221,95041,94861,94681,94501,94321,94141,93961,93781,93601,93421,93241,93061,92881,
+          92701,92521,92341,92161,91981,91801,91621,91441,91261,91081,90901,90721,90541,90361,90181,90001,89821,89641,89461,89281,
+          89101,88921,88741,88561,88381,88201,88021,87841,87661,87481,87301,87121,86941,86761,86581,86401,86221,86041,85861,85681,
+          85501,85321,85141,84961,84781,84601,84421,84241,84061,83881,83701,83521,83341,83161,82981,82801,82621,82441,82261,82081
+        ]
+      },
+      "empty": {
+        "from": "2026-05-08",
+        "through": "2026-05-27",
+        "expected_ids": []
+      }
+    },
+    "plan": [
+      {"id":1,"select_type":"SIMPLE","table":"m","partitions":null,"type":"ref","possible_keys":"merchant_order,merchant_shop,merchant_order_history","key":"merchant_order_history","key_len":"8","ref":"const","rows":62500,"filtered":11.108888626098633,"Extra":"Using index condition"},
+      {"id":1,"select_type":"SIMPLE","table":"o","partitions":null,"type":"eq_ref","possible_keys":"PRIMARY","key":"PRIMARY","key_len":"8","ref":"commerce_capacity_history_test.m.order_id","rows":1,"filtered":100,"Extra":null}
+    ],
+    "run": "capacity-102e066813",
+    "status": "passed",
+    "preflight_checks": [
+      "first_page","second_page","tenant_scope","invalid_cursor","invalid_date","anonymous"
+    ],
+    "workers": 4,
+    "stable_window_seconds": 30,
+    "measured_seconds": 30.14,
+    "warmup_requests": 24,
+    "warmup_seconds": 1.318,
+    "requests_per_second": 22.661,
+    "errors": {},
+    "overall": {
+      "count": 683,
+      "p50_ms": 177.827,
+      "p95_ms": 237.907,
+      "p99_ms": 258.472,
+      "max_ms": 293.909
+    },
+    "by_scenario": {
+      "history": {
+        "count": 227,
+        "p50_ms": 176.723,
+        "p95_ms": 243.688,
+        "p99_ms": 259.944,
+        "max_ms": 275.556
+      },
+      "one_day": {
+        "count": 228,
+        "p50_ms": 178.974,
+        "p95_ms": 234.306,
+        "p99_ms": 243.756,
+        "max_ms": 247.802
+      },
+      "empty": {
+        "count": 228,
+        "p50_ms": 177.018,
+        "p95_ms": 239.522,
+        "p99_ms": 273.874,
+        "max_ms": 293.909
+      }
+    },
+    "samples_ms": {
+      "history": [
+        67.036,206.504,141.7,154.649,112.471,125.062,175.329,108.353,128.969,111.476,144.534,214.467,172.223,187.74,154.032,161.198,149.09,157.551,136.609,161.421,
+        128.411,166.092,155.03,144.439,178.655,219.219,176.607,212.512,233.34,248.592,217.446,201.955,194.327,191.386,160.806,242.987,208.547,245.142,194.36,255.705,
+        227.552,226.742,187.84,192.002,262.517,176.723,247.795,189.291,170.236,188.666,172.983,103.271,100.615,153.596,122.888,132.369,148.027,242.181,126.379,152.304,
+        111.498,131.556,194.08,102.195,109.216,118.242,157.783,192.662,169.277,178.554,133.321,158.599,149.643,173.042,139.455,157.789,142.506,186.717,176.993,163.794,
+        187.894,207.051,170.023,201.975,225.519,217.218,211.271,194.671,194.561,190.97,195.841,220.71,174.995,235.074,183.406,246.043,212.811,234.653,184.24,230.282,
+        259.944,194.755,235.684,186.511,188.828,192.009,202.55,102.448,102.489,131.051,135.434,127.048,143.145,185.257,178.023,131.343,110.505,150.983,110.236,128.837,
+        135.503,95.376,107.402,209.571,194.075,176.373,193.166,155.182,149.036,157.593,165.096,134.572,196.609,182.345,145.27,144.025,167.868,198.613,216.409,188.64,
+        199.311,174.915,191.664,237.28,238.195,196.596,210.353,203.264,146.295,223.261,208.038,208.322,214.939,203.965,207.208,275.556,240.427,188.698,192.315,191.629,
+        243.688,233.581,190.624,146.563,215.908,115.207,134.265,125.292,124.756,120.395,121.63,210.62,143.421,144.993,133.638,112.609,163.247,110.175,143.458,95.444,
+        106.012,251.968,164.652,183.877,151.006,158.786,133.398,163.247,132.022,154.339,123.804,158.888,170.487,140.821,174.208,224.258,198.523,191.765,219.475,233.879,
+        225.423,222.9,194.106,203.951,173.839,248.552,211.641,235.781,208.16,233.012,211.688,213.201,188.084,167.813,255.411,215.555,226.563,198.443,173.75,193.055,
+        175.011,121.627,104.465,156.977,148.368,125.835,152.96
+      ],
+      "one_day": [
+        149.958,188.523,129.744,93.605,120.152,98.336,119.518,130.265,123.531,76.742,168.863,215.573,150.202,208.026,142.443,117.795,151.041,147.979,169.255,177.39,
+        98.95,99.015,148.507,183.537,213.817,221.745,213.009,176.64,178.405,208.655,234.306,211.4,184.287,216.869,220.357,217.898,195.951,213.205,228.704,199.78,
+        225.411,222.928,225.516,234.855,178.571,236.195,196.149,227.533,222.696,188.041,134.51,198.865,123.972,163.421,156.283,105.791,136.205,186.976,191.061,149.39,
+        118.202,121.735,96.086,125.182,125.095,146.736,79.185,128.141,223.561,150.932,197.44,157.597,113.613,122.664,149.352,162.009,166.777,100.224,97.343,145.571,
+        171.462,207.301,233.594,200.786,185.568,190.572,241.114,221.767,213.198,187.096,208.654,192.42,222.621,209.808,226.311,229.812,209.492,232.301,236.596,221.056,
+        205.012,199.497,229.639,215.715,215.183,210.627,194.007,117.295,158.776,125.441,193.188,169.806,120.724,158.68,243.756,129.27,130.518,115.372,131.868,177.229,
+        90.65,113.716,145.047,159.532,181.736,144.595,172.729,148.465,140.307,147.866,154.418,139.101,146.807,156.637,158.207,169.932,190.931,181.476,209.568,171.255,
+        197.544,216.374,198.25,180.017,183.269,201.768,180.043,209.33,178.974,148.324,228.765,190.085,223.193,210.613,226.012,196.712,242.63,221.967,200.435,238.751,
+        191.677,193.096,189.727,186.234,96.369,142.541,142.118,152.517,122.893,158.314,140.304,171.996,172.196,106.192,100.849,128.024,105.873,134.735,140.48,105.069,
+        104.777,190.56,184.976,151.773,201.262,171.176,139.593,165.621,158.672,166.593,191.894,122.252,112.744,140.259,175.475,219.106,224.743,191.228,177.268,176.381,
+        192.664,235.738,214.44,195.189,223.103,199.354,181.846,218.207,212.489,231.196,203.395,225.84,234.551,247.729,247.802,166.061,204.21,192.354,232.787,221.505,
+        201.937,135.951,205.502,131.131,149.9,131.863,123.415,127.445
+      ],
+      "empty": [
+        258.472,149.032,146.967,121.306,174.071,143.447,110.828,126.896,122.595,128.527,187.066,160.992,174.619,170.534,144.433,146.669,152.612,165.597,120.656,180.629,
+        208.994,180.835,178.185,174.307,224.173,197.381,167.861,203.329,174.957,172.504,199.501,231.304,189.703,231.898,148.591,117.96,243.877,198.943,206.244,203.08,
+        201.619,220.888,293.909,214.764,225.223,202.32,187.176,224.528,236.099,177.827,120.992,201.152,139.103,157.337,138.374,165.179,119.207,210.459,159.793,124.791,
+        114.372,173.391,117.014,119.64,131.336,116.374,114.785,216.79,170.529,173.79,198.028,155.855,151.201,151.411,168.567,123.777,189.051,187.045,158.94,169.484,
+        160.947,208.759,209.221,191.805,201.677,173.391,176.47,212.205,233.395,189.013,211.303,185.897,137.832,245.669,198.159,206.985,213.805,183.374,216.014,273.874,
+        234.162,191.129,203.475,191.666,225.81,233.801,165.969,143.804,232.81,131.962,137.811,127.806,141.519,115.367,157.415,199.761,139.273,142.298,129.493,113.561,
+        140.855,124.904,147.701,79.145,98.267,246.873,167.473,190.409,162.42,138.065,117.729,158.039,158.565,161.042,106.301,131.625,159.226,152.152,206.242,237.907,
+        199.877,187.951,207.12,240.467,234.116,210.863,175.254,215.983,176.572,257.879,217.376,240.793,231.964,228.087,225.72,239.522,202.312,185.974,250.766,227.42,
+        221.289,197.161,196.891,188.28,140.882,137.182,126.824,177.589,179.342,122.576,157.434,234.362,157.094,151.477,119.633,156.604,157.732,86.035,119.983,132.065,
+        144.257,180.057,164.179,184.558,162.378,121.818,136.355,146.088,140.933,137.252,165.095,187.373,178.252,187.896,183.429,219.742,183.959,195.655,217.507,198.07,
+        181.335,191.719,207.265,173.783,213.745,172.863,138.119,225.752,197.785,214.74,221.487,220.077,198.248,286.531,237.232,214.672,223.004,193.044,211.501,222.437,
+        147.758,110.268,177.018,137.977,160.447,143.69,155.145,128.568
+      ]
+    }
+  }
+}

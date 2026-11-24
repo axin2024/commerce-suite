@@ -236,6 +236,16 @@ denied(fn() => $app->adjustStock($north, $a, 10, 0),
     'outdated stock edit cannot restore paid inventory');
 $merchantOrders = $app->rows('SELECT id,shop_id FROM merchant_orders WHERE order_id=? ORDER BY shop_id', [$order]);
 [$northOrder, $pondOrder] = array_map('intval', array_column($merchantOrders, 'id'));
+$placedAt = $app->rows('SELECT created_at FROM orders WHERE id=?', [$order])[0]['created_at'];
+$orderDay = substr($placedAt, 0, 10);
+$shopHistory = $app->merchantOrderHistory($fulfillmentStaff, $orderDay, $orderDay);
+same([$northOrder], array_map('intval', array_column($shopHistory['rows'], 'id')), 'order history is scoped to the fulfillment member shop');
+same($placedAt, $shopHistory['rows'][0]['placed_at'], 'child history keeps the parent UTC timestamp');
+same(null, $shopHistory['next'], 'one order needs no history cursor');
+same([$pondOrder], array_map('intval', array_column($app->merchantOrderHistory($pond, $orderDay, $orderDay)['rows'], 'id')),
+    'another owner sees its own child order');
+denied(fn() => $app->merchantOrderHistory($pickupStaff, $orderDay, $orderDay), 'pickup staff cannot browse all shop orders');
+denied(fn() => $app->merchantOrderHistory($north, '2026-02-30', $orderDay), 'order history rejects invalid calendar dates');
 denied(fn() => $app->preparePickup($pond, $northOrder, $northPickup), 'pickup order ownership');
 denied(fn() => $app->preparePickup($catalogStaff, $northOrder, $northPickup), 'catalog staff cannot prepare pickup');
 denied(fn() => $app->preparePickup($fulfillmentStaff, $northOrder, $northPickup), 'delivery staff cannot prepare pickup');

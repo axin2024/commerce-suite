@@ -77,7 +77,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
         WHERE m.shop_id=? AND o.channel='web' AND m.status IN ('ready','partial','shipped','fulfilled')
         ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
 <section class="panel" id="fulfillment">
-    <h2>订单履约</h2>
+    <div class="heading"><h2>订单履约</h2><a href="/?page=merchant_orders">查询历史订单</a></div>
     <?php if (!$merchantOrders): ?><p class="muted">暂无已付款订单。</p><?php endif; ?>
     <?php foreach ($merchantOrders as $order): ?>
         <div class="record">

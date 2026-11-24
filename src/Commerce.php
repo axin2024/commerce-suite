@@ -12,6 +12,7 @@ require_once __DIR__ . '/ShippingOperations.php';
 require_once __DIR__ . '/ReturnOperations.php';
 require_once __DIR__ . '/SettlementOperations.php';
 require_once __DIR__ . '/ChannelBillOperations.php';
+require_once __DIR__ . '/MerchantOrderHistory.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -27,6 +28,7 @@ final class Commerce
     use ReturnOperations;
     use SettlementOperations;
     use ChannelBillOperations;
+    use MerchantOrderHistory;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -674,8 +676,8 @@ final class Commerce
             }
             $merchantOrders = [];
             foreach ($current['shops'] as $shop => $totals) {
-                $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders (order_id,shop_id,total,shipping)
-                    VALUES (?,?,?,?)', [$order, $shop, $totals['total'], $totals['shipping']]);
+                $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders (order_id,shop_id,total,shipping,placed_at)
+                    SELECT id,?,?,?,created_at FROM orders WHERE id=?', [$shop, $totals['total'], $totals['shipping'], $order]);
                 if (isset($totals['pickup'])) {
                     $location = $totals['pickup'];
                     $this->query('INSERT INTO order_pickups (merchant_order_id,pickup_location_id,location_name,location_address)
