@@ -278,6 +278,10 @@ try {
                 case 'warehouse_create':
                     $app->createWarehouse($id, input('code'), input('name'), input('address'));
                     break;
+                case 'freight_publish':
+                    $app->publishFreightPolicy($id, number('revision', 0), input('strategy'), cents('base_fee'),
+                        input('free_threshold') === '' ? null : cents('free_threshold'));
+                    break;
                 case 'preorder_create':
                     $app->createPreorder($id, number('product'), number('warehouse'), input('code'),
                         number('quota', 1, 1_000_000), input('cutoff'), input('expected'));

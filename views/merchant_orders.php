@@ -28,12 +28,14 @@ try {
         <p class="muted">所选范围内没有订单。</p>
     <?php else: ?>
         <div class="table-wrap"><table>
-            <thead><tr><th>子订单</th><th>母订单</th><th>下单时间（UTC）</th><th>渠道</th><th>状态</th><th>金额</th><th>运费</th></tr></thead>
+            <thead><tr><th>子订单</th><th>母订单</th><th>下单时间（UTC）</th><th>渠道</th><th>状态</th><th>金额</th><th>运费</th><th>运费规则</th></tr></thead>
             <tbody>
                 <?php foreach ($history['rows'] as $entry): ?>
                     <tr><th scope="row">#<?= e($entry['id']) ?></th><td>#<?= e($entry['order_id']) ?></td>
                         <td><?= e($entry['placed_at']) ?></td><td><?= $entry['channel'] === 'web' ? '快递配送' : '门店自提' ?></td>
-                        <td><?= badge($entry['status']) ?></td><td><?= cash($entry['total']) ?></td><td><?= cash($entry['shipping']) ?></td></tr>
+                        <td><?= badge($entry['status']) ?></td><td><?= cash($entry['total']) ?></td><td><?= cash($entry['shipping']) ?></td>
+                        <td><?= isset($entry['freight_policy_revision_id']) ? '#' . e($entry['freight_policy_revision_id'])
+                            : ($entry['channel'] === 'web' ? '默认' : '—') ?></td></tr>
                 <?php endforeach; ?>
             </tbody>
         </table></div>

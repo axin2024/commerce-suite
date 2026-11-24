@@ -16,6 +16,7 @@ if (!in_array($method, ['GET', 'HEAD'], true)) {
 
 try {
     assertSchemaReady(database());
+    FreightStrategies::fromEnvironment();
     $status = 'ready';
 } catch (Throwable) {
     http_response_code(503);

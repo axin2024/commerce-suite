@@ -190,7 +190,7 @@ foreach (['history' => [$firstDate, $anchor], 'one_day' => [$anchor, $anchor],
         ORDER BY o.created_at DESC,m.id DESC LIMIT 100', [$tenants['main']['buyer_id'], $tenants['main']['shop_id'], $from, $to]);
     $expectations[$label] = ['from' => $from, 'through' => $to, 'expected_ids' => array_map('intval', array_column($rows, 'id'))];
 }
-$plan = $app->rows('EXPLAIN SELECT m.id,m.order_id,m.placed_at,m.status,m.total,m.shipping,o.channel
+$plan = $app->rows('EXPLAIN SELECT m.id,m.order_id,m.placed_at,m.status,m.total,m.shipping,m.freight_policy_revision_id,o.channel
     FROM merchant_orders m JOIN orders o ON o.id=m.order_id WHERE m.shop_id=? AND m.placed_at>=? AND m.placed_at<?
     ORDER BY m.placed_at DESC,m.id DESC LIMIT 51',
     [$tenants['main']['shop_id'], "$firstDate 00:00:00", $date('+1 day') . ' 00:00:00']);

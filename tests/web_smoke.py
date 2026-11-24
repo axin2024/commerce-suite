@@ -586,3 +586,51 @@ if REFUND_SECRET:
     assert "可用积分 <strong>240</strong>" in point_account
     assert "退款返还抵扣" in point_account and "退款扣回赠送" in point_account
     print("Loyalty web flow passed: published policy, wallet hold, mixed payment, versioned refund, and account history.")
+
+freight_buyer = Session()
+freight_buyer.submit("/?page=account", "register",
+                     email=f"freight-{uuid4().hex}@example.test", password="CommerceFixture-2026")
+freight_buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+old_freight = freight_buyer.submit("/?page=cart", "quote", channel="web", destination="运费规则测试地址")
+assert "运费</dt><dd>¥8.00" in old_freight
+
+merchant_path = "/?page=merchant"
+freight_form, = forms(north.load(merchant_path), "freight_publish")
+initial_revision = extract(freight_form, "revision")
+published = north.submit(merchant_path, "freight_publish", revision=initial_revision, strategy="per_order_v1",
+                         base_fee="6.00", free_threshold="121.00")
+freight_form, = forms(published, "freight_publish")
+paid_freight_revision = extract(freight_form, "revision")
+assert paid_freight_revision != initial_revision and "¥121.00" in published
+assert "运费规则已更新" in north.submit(merchant_path, "freight_publish", revision=initial_revision,
+                                        strategy="per_order_v1", base_fee="8.00")
+stale = freight_buyer.submit("/?page=cart", "place", token=extract(old_freight, "token"))
+assert "运费、积分规则或分仓结果已变化" in stale
+
+paid_freight = freight_buyer.submit("/?page=cart", "quote", channel="web", destination="运费规则测试地址")
+assert "运费</dt><dd>¥6.00" in paid_freight and "¥126.00" in paid_freight
+placed_freight = freight_buyer.submit("/?page=cart", "place", token=extract(paid_freight, "token"))
+freight_parent = extract(placed_freight, "order")
+published = north.submit(merchant_path, "freight_publish", revision=paid_freight_revision,
+                         strategy="per_order_v1", base_fee="6.00", free_threshold="120.00")
+freight_form, = forms(published, "freight_publish")
+free_freight_revision = extract(freight_form, "revision")
+freight_buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+free_freight = freight_buyer.submit("/?page=cart", "quote", channel="web", destination="运费规则测试地址")
+assert "运费</dt><dd>¥0.00" in free_freight
+order_row = re.search(rf"<tr><th scope=\"row\">#\d+</th><td>#{freight_parent}</td>.*?</tr>",
+                      north.load("/?page=merchant_orders"), re.S)[0]
+assert "¥6.00" in order_row and f"<td>#{paid_freight_revision}</td>" in order_row
+if 'value="consolidation_v1"' in freight_form:
+    plugin_published = north.submit(merchant_path, "freight_publish", revision=free_freight_revision,
+                                    strategy="consolidation_v1", base_fee="7.01")
+    plugin_form, = forms(plugin_published, "freight_publish")
+    plugin_revision = extract(plugin_form, "revision")
+    plugin_freight = freight_buyer.submit("/?page=cart", "quote", channel="web", destination="扩展计费验收地址")
+    assert "运费</dt><dd>¥7.01" in plugin_freight
+    plugin_order = freight_buyer.submit("/?page=cart", "place", token=extract(plugin_freight, "token"))
+    plugin_parent = extract(plugin_order, "order")
+    plugin_row = re.search(rf"<tr><th scope=\"row\">#\d+</th><td>#{plugin_parent}</td>.*?</tr>",
+                           north.load("/?page=merchant_orders"), re.S)[0]
+    assert "¥7.01" in plugin_row and f"<td>#{plugin_revision}</td>" in plugin_row
+print("Freight policy web flow passed: owner publishing, stale quote, free shipping, and frozen order freight.")

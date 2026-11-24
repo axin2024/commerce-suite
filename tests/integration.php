@@ -1116,6 +1116,58 @@ same(-133, array_sum(array_column($pointLog, 'balance_delta')), 'account balance
 same(0, array_sum(array_column($pointLog, 'held_delta')), 'entries also reconcile open holds');
 $app->publishLoyalty($admin, 0, 0, false);
 
+$freightSku = $app->reviewSku($admin, $app->submitSku($north, 0, "FEE-$tag", '运费规则样例', 10000, 1, $bags,
+    '运费规则样例', '', '', true, true), true);
+$freightStockVersion = (int) $app->rows('SELECT version FROM products WHERE id=?', [$freightSku])[0]['version'];
+$app->adjustStock($north, $freightSku, 4, $freightStockVersion, $east);
+$splitFreight = static fn(Commerce $market, int $quantity = 2): array =>
+    $market->quote($buyer, [$freightSku => $quantity], 'web', '两仓运费验收');
+$legacyFreight = $splitFreight($app);
+same(1600, $legacyFreight['shipping'], 'unconfigured shop still charges eight yuan per warehouse');
+denied(fn() => $app->publishFreightPolicy($catalogStaff, 0, 'per_order_v1', 600, null), 'only the owner can publish freight rules');
+denied(fn() => $app->publishFreightPolicy($north, 0, 'missing_v1', 600, null), 'an unregistered strategy cannot be published');
+denied(fn() => $app->publishFreightPolicy($north, 0, 'per_order_v1', 600, 0), 'a configured free threshold is positive');
+$freightOne = $app->publishFreightPolicy($north, 0, 'per_order_v1', 600, 20000);
+denied(fn() => $app->publishFreightPolicy($north, 0, 'per_order_v1', 700, null), 'stale freight revisions cannot overwrite changes');
+denied(fn() => $app->publishFreightPolicy($pond, $freightOne, 'per_order_v1', 700, null), 'another shop cannot use this revision');
+denied(fn() => $app->place($buyer, $legacyFreight['token']), 'a quote with the old freight version requires confirmation');
+same([], $app->merchantFreightHistory($pond), 'another shop has separate freight history');
+same(600, $splitFreight($app, 1)['shipping'], 'charge the shop flat rate below its threshold');
+$qualifying = $splitFreight($app);
+same([0, $freightOne], [$qualifying['shipping'], $qualifying['shops'][$northShop]['freight_policy_revision_id']],
+    'free shipping applies at the exact threshold and records its rule');
+$freightOrder = $app->place($buyer, $qualifying['token']);
+$freightTwo = $app->publishFreightPolicy($north, $freightOne, 'per_order_v1', 700, null);
+$frozenFreight = $app->rows('SELECT shipping,freight_policy_revision_id FROM merchant_orders WHERE order_id=?', [$freightOrder])[0];
+same([0, $freightOne], array_map('intval', array_values($frozenFreight)), 'a placed order keeps its original freight and revision');
+same($freightOrder, $app->place($buyer, $qualifying['token']), 'replaying a placed quote still returns its original order');
+same(true, $app->cancel($freightOrder, $buyer), 'cancelling the order returns warehouse allocations');
+same(700, $splitFreight($app)['shipping'], 'per-order rate is only charged once for two allocated warehouses');
+$pickupFreight = $app->quote($buyer, [$freightSku => 1], 'store', '', pickupLocations: $northLocations);
+same([0, null], [$pickupFreight['shipping'], $pickupFreight['shops'][$northShop]['freight_policy_revision_id'] ?? null],
+    'pickup is not priced by delivery policies');
+$externalFreight = new Commerce($db, new FreightStrategies(require __DIR__ . '/../examples/freight-consolidation.php'));
+$freightThree = $externalFreight->publishFreightPolicy($north, $freightTwo, 'consolidation_v1', 701, null);
+same(1051, $splitFreight($externalFreight)['shipping'], 'the extension prices the second warehouse at half of an odd fee');
+denied(fn() => $splitFreight(new Commerce($db, new FreightStrategies())), 'a missing active extension never falls back to a different fee');
+$freightFour = $externalFreight->publishFreightPolicy($north, $freightThree, FreightStrategies::DEFAULT, 800, null);
+same(1600, $splitFreight($app)['shipping'], 'publishing a built-in strategy safely replaces an optional extension');
+$oldSameFreight = $splitFreight($app);
+$freightFive = $app->publishFreightPolicy($north, $freightFour, FreightStrategies::DEFAULT, 800, null);
+same(1600, $splitFreight($app)['shipping'], 'the same configuration can yield the same fee under a new revision');
+denied(fn() => $app->place($buyer, $oldSameFreight['token']), 'equal-priced freight revisions still require a new quote');
+$freightSix = $app->publishFreightPolicy($north, $freightFive, 'per_order_v1', 700, 10000);
+$couponCode = "freight-preview-$tag";
+$app->publishPromotion($admin, $couponCode, '包邮券后门槛验收', 10000, 1000, true, true);
+$freightCoupon = (int) $app->rows('SELECT id FROM promotions WHERE code=?', [$couponCode])[0]['id'];
+$app->claimCoupon($buyer, $freightCoupon);
+same(0, $splitFreight($app, 1)['shipping'], 'full goods value qualifies without a coupon');
+$couponFreight = $app->quote($buyer, [$freightSku => 1, $b => 1], 'web', '券后包邮门槛验收', $freightCoupon);
+same([700, 800], [$couponFreight['shops'][$northShop]['shipping'], $couponFreight['shops'][$pondShop]['shipping']],
+    'the coupon reduces eligibility and freight is calculated independently for each shop');
+same([$freightSix, $freightFive, $freightFour, $freightThree, $freightTwo, $freightOne],
+    array_map('intval', array_column($app->merchantFreightHistory($north), 'id')), 'history maintains every published revision');
+
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
 denied(fn() => $receipt($intent($resaleOrder), "disabled-$tag", 200), 'webhook processing requires sandbox opt-in');

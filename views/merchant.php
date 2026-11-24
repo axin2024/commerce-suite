@@ -17,6 +17,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 <div class="tabs">
     <?php if ($isOwner): ?><a href="#business">入驻资料</a><a href="#staff">店铺成员</a><?php endif; ?>
     <?php if ($canCatalog): ?><a href="#products">商品库存</a><?php endif; ?>
+    <?php if ($isOwner && $canOperate): ?><a href="#freight">运费规则</a><?php endif; ?>
     <?php if ($canFulfill): ?><a href="#fulfillment">履约</a><?php endif; ?>
     <?php if ($canPickup): ?><a href="#pickup">门店自提</a><?php endif; ?>
     <?php if ($canSupport || $canFulfill): ?><a href="#refunds">售后</a><?php endif; ?>
@@ -72,6 +73,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 </section>
 <?php endif; ?>
 <?php if ($canCatalog) { require __DIR__ . '/catalog_workbench.php'; } ?>
+<?php if ($isOwner && $canOperate) { require __DIR__ . '/freight_workbench.php'; } ?>
 <?php if ($canFulfill):
     $merchantOrders = $app->rows("SELECT m.*,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
         WHERE m.shop_id=? AND o.channel='web' AND m.status IN ('ready','partial','shipped','fulfilled')

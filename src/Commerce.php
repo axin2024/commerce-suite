@@ -13,6 +13,8 @@ require_once __DIR__ . '/ReturnOperations.php';
 require_once __DIR__ . '/SettlementOperations.php';
 require_once __DIR__ . '/ChannelBillOperations.php';
 require_once __DIR__ . '/MerchantOrderHistory.php';
+require_once __DIR__ . '/FreightStrategies.php';
+require_once __DIR__ . '/FreightPolicyOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -29,6 +31,7 @@ final class Commerce
     use SettlementOperations;
     use ChannelBillOperations;
     use MerchantOrderHistory;
+    use FreightPolicyOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -39,7 +42,12 @@ final class Commerce
         'finance' => '店铺财务',
     ];
 
-    public function __construct(private readonly PDO $db) {}
+    private readonly FreightStrategies $freightStrategies;
+
+    public function __construct(private readonly PDO $db, ?FreightStrategies $freightStrategies = null)
+    {
+        $this->freightStrategies = $freightStrategies ?? FreightStrategies::fromEnvironment();
+    }
 
     public function rows(string $sql, array $params = []): array
     {
@@ -551,6 +559,13 @@ final class Commerce
             $shops[$item['shop']]['total'] += $net;
         }
         unset($item);
+        if (!$pickup) {
+            foreach ($shops as $shopId => &$shop) {
+                $shop = array_replace($shop, $this->deliveryFreight($shopId, $shop['total'], $shop['warehouses'], $lock));
+                $shop['total'] += $shop['shipping'];
+            }
+            unset($shop);
+        }
         $loyalty = $this->loyaltyQuote($buyer, $points, $goods, $lock);
         if ($loyalty !== null) {
             foreach ($loyalty['parts'] as $id => $spent) {
@@ -562,11 +577,6 @@ final class Commerce
             }
             unset($loyalty['rate'], $loyalty['parts']);
         }
-        foreach ($shops as &$shop) {
-            $shop['shipping'] = $channel === 'web' ? 800 * count($shop['warehouses']) : 0;
-            $shop['total'] += $shop['shipping'];
-        }
-        unset($shop);
         $shipping = array_sum(array_column($shops, 'shipping'));
         ksort($shops);
         return [
@@ -660,7 +670,7 @@ final class Commerce
                 $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations'], $snapshot['preorders'], $snapshot['loyalty']['spent'] ?? 0);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
-                throw new RuleViolation('商品、价格、积分规则或分仓结果已变化，请重新报价。');
+                throw new RuleViolation('商品、价格、运费、积分规则或分仓结果已变化，请重新报价。');
             }
             $loyalty = $current['loyalty'] ?? null;
             $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
@@ -676,8 +686,10 @@ final class Commerce
             }
             $merchantOrders = [];
             foreach ($current['shops'] as $shop => $totals) {
-                $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders (order_id,shop_id,total,shipping,placed_at)
-                    SELECT id,?,?,?,created_at FROM orders WHERE id=?', [$shop, $totals['total'], $totals['shipping'], $order]);
+                $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders
+                    (order_id,shop_id,total,shipping,placed_at,freight_policy_revision_id)
+                    SELECT id,?,?,?,created_at,? FROM orders WHERE id=?',
+                    [$shop, $totals['total'], $totals['shipping'], $totals['freight_policy_revision_id'] ?? null, $order]);
                 if (isset($totals['pickup'])) {
                     $location = $totals['pickup'];
                     $this->query('INSERT INTO order_pickups (merchant_order_id,pickup_location_id,location_name,location_address)

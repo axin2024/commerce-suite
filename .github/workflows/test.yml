@@ -49,6 +49,7 @@ jobs:
           COMMERCE_SANDBOX_WEBHOOK_SECRET: test-only-commerce-suite-webhook-key
           COMMERCE_SANDBOX_SHIPPING_SECRET: test-only-commerce-suite-shipping-key
           COMMERCE_SANDBOX_REFUND_SECRET: test-only-commerce-suite-refund-key
+          COMMERCE_FREIGHT_EXTENSION: ${{ github.workspace }}/examples/freight-consolidation.php
         run: |
           php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_suite_web_test CHARACTER SET utf8mb4");'
           export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_suite_web_test}"
@@ -72,6 +73,7 @@ jobs:
       COMMERCE_SANDBOX_WEBHOOK_SECRET: test-only-compose-payment-secret-ci
       COMMERCE_SANDBOX_SHIPPING_SECRET: test-only-compose-shipping-secret-ci
       COMMERCE_SANDBOX_REFUND_SECRET: test-only-compose-refund-secret-ci
+      COMMERCE_FREIGHT_EXTENSION: /app/examples/freight-consolidation.php
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up --detach --build --wait --wait-timeout 120
