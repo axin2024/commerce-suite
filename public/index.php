@@ -320,6 +320,34 @@ try {
                 case 'catalog_category':
                     $app->createCategory($id, input('name'));
                     break;
+                case 'catalog_channel_create':
+                    $next = 'sales_channels';
+                    $credential = $app->createCatalogChannel($id, trim(input('code')), input('label'));
+                    $nextParams = ['channel' => $credential['id']];
+                    $_SESSION['catalog_credential'] = $credential;
+                    break;
+                case 'catalog_channel_rotate':
+                case 'catalog_channel_revoke':
+                    $next = 'sales_channels';
+                    $channel = number('channel');
+                    $nextParams = ['channel' => $channel];
+                    $token = $app->changeCatalogCredential($id, $channel, number('generation'), $action === 'catalog_channel_revoke');
+                    if ($token !== null) {
+                        $_SESSION['catalog_credential'] = ['id' => $channel, 'token' => $token];
+                    } else {
+                        unset($_SESSION['catalog_credential']);
+                    }
+                    break;
+                case 'catalog_channel_listing':
+                    $next = 'sales_channels';
+                    $channel = number('channel');
+                    $nextParams = ['channel' => $channel];
+                    $enabled = input('enabled');
+                    if (!in_array($enabled, ['0', '1'], true)) {
+                        throw new RuleViolation('请选择渠道商品状态。');
+                    }
+                    $app->setCatalogChannelListing($id, $channel, trim(input('sku')), $enabled === '1', number('revision', 0));
+                    break;
                 case 'member_level':
                     $app->setMemberLevel($id, input('email'), input('level'));
                     break;
@@ -470,7 +498,7 @@ try {
         'cart' => ['buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
         'settlements' => ['admin', 'finance', 'merchant', 'payout'],
         'channel_bills' => ['finance', 'merchant'],
-        'merchant_orders' => ['merchant'],
+        'merchant_orders' => ['merchant'], 'sales_channels' => ['merchant'],
     ];
     if ($page === 'settlements' && ($_GET['download'] ?? '') === 'csv') {
         $batch = filter_var($_GET['batch'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
@@ -501,7 +529,8 @@ try {
         http_response_code(404);
         $page = 'home';
     } elseif (!in_array($role, $scope[$page], true)
-        || ($page === 'merchant_orders' && !Commerce::canManage($user, 'fulfillment'))) {
+        || ($page === 'merchant_orders' && !Commerce::canManage($user, 'fulfillment'))
+        || ($page === 'sales_channels' && !Commerce::canManage($user, 'owner'))) {
         http_response_code(403);
         $page = 'account';
     }

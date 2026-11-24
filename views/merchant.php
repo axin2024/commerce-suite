@@ -17,7 +17,9 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 <div class="tabs">
     <?php if ($isOwner): ?><a href="#business">入驻资料</a><a href="#staff">店铺成员</a><?php endif; ?>
     <?php if ($canCatalog): ?><a href="#products">商品库存</a><?php endif; ?>
-    <?php if ($isOwner && $canOperate): ?><a href="#freight">运费规则</a><?php endif; ?>
+    <?php if ($isOwner && $canOperate): ?>
+        <a href="#freight">运费规则</a><a href="/?page=sales_channels">外部销售渠道</a>
+    <?php endif; ?>
     <?php if ($canFulfill): ?><a href="#fulfillment">履约</a><?php endif; ?>
     <?php if ($canPickup): ?><a href="#pickup">门店自提</a><?php endif; ?>
     <?php if ($canSupport || $canFulfill): ?><a href="#refunds">售后</a><?php endif; ?>

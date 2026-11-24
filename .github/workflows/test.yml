@@ -65,6 +65,28 @@ jobs:
           php bin/commerce.php migrate
           php bin/commerce.php seed
           python3 tests/web_smoke.py
+      - name: Run catalog channel HTTP checks
+        env:
+          COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
+          COMMERCE_PAYMENT_EXTENSION: ${{ github.workspace }}/examples/payment-bridge.php
+          COMMERCE_CHECKOUT_CHANNEL: bridge_v1
+          COMMERCE_BRIDGE_CHECKOUT_URL: https://checkout.example.test/pay
+          COMMERCE_BRIDGE_CHECKOUT_SECRET: test-only-bridge-checkout-signing-key
+          COMMERCE_BRIDGE_WEBHOOK_SECRET: test-only-bridge-receipt-signing-key
+        run: |
+          php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_catalog_test CHARACTER SET utf8mb4");'
+          export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_catalog_test}"
+          php bin/commerce.php migrate
+          php bin/commerce.php seed
+          export APP_DEMO=0
+          php -S 127.0.0.1:8080 -t public > /tmp/commerce-catalog.log 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for attempt in {1..10}; do
+            if curl --fail --silent --max-time 3 http://127.0.0.1:8080/health.php; then break; fi
+            sleep 1
+          done
+          python3 tests/catalog_channel_web.py
       - name: Run payment channel and carrier HTTP checks
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4

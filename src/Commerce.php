@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
+require_once __DIR__ . '/ChannelCatalogOperations.php';
 require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PreorderOperations.php';
@@ -25,6 +26,7 @@ final class RuleViolation extends RuntimeException {}
 final class Commerce
 {
     use CatalogOperations;
+    use ChannelCatalogOperations;
     use InventoryOperations;
     use PickupOperations;
     use PreorderOperations;
