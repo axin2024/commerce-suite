@@ -25,4 +25,15 @@
 
 ## 许可
 
-项目源码、文档及合成业务样例随 [Apache License 2.0](LICENSE) 发行。仓库使用系统字体与自带样式，未随源码分发字体、商品图片或第三方媒体。运行时依赖 PHP、PDO MySQL 和 MySQL，容器环境另依赖所用基础镜像，持续集成依赖 [工作流中列出的 Actions](.github/workflows/test.yml)。外部依赖各自的许可证由其对应项目维护。
+项目源码、文档及合成业务样例随 [Apache License 2.0](LICENSE) 发行。源码包中的素材和外部依赖如下。
+
+| 内容 | 来源与分发方式 |
+| --- | --- |
+| 页面样式与自提条码 | 样式及条码绘制代码随项目分发。文字使用设备的系统字体 |
+| 演示店铺、商品、订单与账单 | 业务样例为合成数据，来自项目种子、测试及 `public/channel-bill-sample.csv` |
+| 商品图片、字体文件、音视频和模型权重 | 源码包无此类文件 |
+| PHP 和 PDO MySQL | 运行时由部署者安装。[PHP 许可](https://www.php.net/license/) |
+| MySQL Community Server | 运行时由部署者安装。[MySQL 许可文件](https://github.com/mysql/mysql-server/blob/trunk/LICENSE) |
+| Python 3 | 运行网页回归和压测时由开发者安装。[Python 许可](https://docs.python.org/3/license.html) |
+| 容器镜像 | Compose 启动或构建时从镜像源取得。[PHP 官方镜像](https://github.com/docker-library/php) · [MySQL 官方镜像](https://github.com/docker-library/mysql) |
+| CI 工具 | 由工作流加载。[actions/checkout](https://github.com/actions/checkout) · [shivammathur/setup-php](https://github.com/shivammathur/setup-php) |
