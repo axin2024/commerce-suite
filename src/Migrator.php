@@ -6,6 +6,16 @@ final class Migrator
 {
     public function __construct(private readonly PDO $db) {}
 
+    public function isCurrent(string $directory): bool
+    {
+        $expected = ['0001_baseline'];
+        foreach ($this->migrationFiles($directory) as $path) {
+            $expected[] = basename($path, '.php');
+        }
+        $applied = $this->db->query('SELECT version FROM schema_migrations ORDER BY version')->fetchAll(PDO::FETCH_COLUMN);
+        return $applied === $expected;
+    }
+
     public function run(string $directory): array
     {
         $schema = (string) $this->db->query('SELECT DATABASE()')->fetchColumn();
@@ -48,12 +58,7 @@ final class Migrator
             $record->execute(['0001_baseline']);
             $applied[] = '0001_baseline';
         }
-        $files = glob($directory . '/migrations/*.php');
-        if ($files === false) {
-            throw new RuntimeException('Cannot list schema migrations.');
-        }
-        sort($files, SORT_STRING);
-        foreach ($files as $path) {
+        foreach ($this->migrationFiles($directory) as $path) {
             $version = basename($path, '.php');
             if (in_array($version, $completed, true)) {
                 continue;
@@ -65,6 +70,16 @@ final class Migrator
             $applied[] = $version;
         }
         return $applied;
+    }
+
+    private function migrationFiles(string $directory): array
+    {
+        $files = glob($directory . '/migrations/*.php');
+        if (!$files) {
+            throw new RuntimeException('Cannot list schema migrations.');
+        }
+        sort($files, SORT_STRING);
+        return $files;
     }
 
     public function hasColumn(string $table, string $column): bool

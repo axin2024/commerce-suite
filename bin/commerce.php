@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 require __DIR__ . '/../src/bootstrap.php';
-require __DIR__ . '/../src/Migrator.php';
 
 try {
     $db = database();
@@ -12,6 +11,10 @@ try {
         case 'migrate':
             $applied = (new Migrator($db))->run(__DIR__ . '/../database');
             echo $applied ? 'Applied: ' . implode(', ', $applied) . PHP_EOL : "Schema is current.\n";
+            break;
+        case 'health':
+            assertSchemaReady($db);
+            echo "Ready.\n";
             break;
         case 'operator':
             $password = getenv('COMMERCE_OPERATOR_PASSWORD') ?: '';
@@ -60,7 +63,7 @@ try {
             echo 'Channel bill records checked: ', $app->processChannelBills(), "\n";
             break;
         default:
-            fwrite(STDERR, "Usage: php bin/commerce.php migrate|seed|expire|reconcile|operator <admin|finance|payout> <email>\n");
+            fwrite(STDERR, "Usage: php bin/commerce.php migrate|health|seed|expire|reconcile|operator <admin|finance|payout> <email>\n");
             exit(2);
     }
 } catch (Throwable $error) {

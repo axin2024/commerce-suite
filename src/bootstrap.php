@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Commerce.php';
+require_once __DIR__ . '/Migrator.php';
 
 function database(): PDO
 {
@@ -24,6 +25,13 @@ function database(): PDO
 function demoEnabled(): bool
 {
     return getenv('APP_DEMO') === '1';
+}
+
+function assertSchemaReady(PDO $db): void
+{
+    if (!(new Migrator($db))->isCurrent(__DIR__ . '/../database')) {
+        throw new RuntimeException('Database schema does not match this release.');
+    }
 }
 
 function sandboxWebhookSecret(): ?string

@@ -98,6 +98,11 @@ def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.p
             return error.code, json.load(error)
 
 
+with urllib.request.urlopen(BASE + "/health.php", timeout=8) as response:
+    assert response.status == 200 and json.load(response) == {"status": "ready"}
+    assert response.headers.get("Cache-Control") == "no-store"
+    assert response.headers.get("Set-Cookie") is None
+
 buyer, north, pond, finance, admin, payout = (Session() for _ in range(6))
 for session, role in zip((buyer, north, pond, finance, admin, payout), ("buyer", "north", "pond", "finance", "admin", "payout")):
     session.login(role)
@@ -292,7 +297,7 @@ if REFUND_SECRET:
         test_dsn = os.environ.get("COMMERCE_DSN", "")
         if os.environ.get("APP_DEMO") == "1" and re.search(r"(?:^|[;:])dbname=[^;]+_test(?:;|$)", test_dsn):
             php = ["php", "-d", "extension=pdo_mysql"] if os.name == "nt" else ["php"]
-            subprocess.run([*php, "bin/commerce.php", "reconcile"], check=True, timeout=15)
+            subprocess.run([*php, "bin/worker.php", "--once"], check=True, timeout=15)
             report = finance.load(bill_path)
             assert "已匹配 2" in report and "待补回执 1" in report and "格式错误 1" in report
             sources = re.findall(r'href="(/\?page=platform&amp;[^"]+)">本地回执 #\d+</a>', report)

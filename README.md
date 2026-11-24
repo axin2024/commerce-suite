@@ -23,7 +23,7 @@
 
 ## 本机运行
 
-需要 64 位 PHP 8.2 或以上、`pdo_mysql` 和 MySQL 8.0.16 或以上。本项目无需安装 Composer 依赖。先创建空库 `commerce_suite` 和有该库权限的专用账号。
+需要 64 位 PHP 8.2 或以上和 `pdo_mysql`。新部署使用 MySQL 8.4 LTS，现有 MySQL 8.0.16 或更高补丁版的 8.0 部署仍可运行。本项目无需安装 Composer 依赖。先创建空库 `commerce_suite` 和有该库权限的专用账号。
 
 ```sh
 export COMMERCE_DSN='mysql:host=127.0.0.1;port=3306;dbname=commerce_suite;charset=utf8mb4'
@@ -32,6 +32,7 @@ export COMMERCE_DB_PASSWORD='<本地数据库密码>'
 export APP_DEMO=1
 
 php bin/commerce.php migrate
+php bin/commerce.php health
 php bin/commerce.php seed
 php -S 127.0.0.1:8080 -t public
 ```
@@ -40,13 +41,14 @@ PowerShell 使用 `$env:变量名 = '值'` 设置环境变量。Windows 如未�
 
 ## Docker Compose
 
-设置 `COMMERCE_DB_PASSWORD`、`MYSQL_ROOT_PASSWORD` 和 `APP_DEMO=1`，再运行以下命令。Compose 默认仅将 Web 端口绑定至本机。
+复制 [配置样例](.env.example) 为 `.env`，填写两个不同的 MySQL 密码。体验演示时设置 `APP_DEMO=1`，再运行以下命令。Compose 默认仅将 Web 端口绑定至本机，数据库迁移成功后启动 Web 和后台任务。
 
 ```sh
-docker compose up -d --build
-docker compose exec app php bin/commerce.php migrate
+docker compose up -d --build --wait
 docker compose exec app php bin/commerce.php seed
 ```
+
+打开 [本机商城](http://127.0.0.1:8080/)。已有 MySQL 8.0 数据卷时，先在 `.env` 中指定 `COMMERCE_MYSQL_IMAGE=mysql:8.0`。日常维护及跨版本迁移参见[部署与恢复](docs/deployment.md)。
 
 ## 演示
 
@@ -146,11 +148,10 @@ php bin/sandbox-shipping.php 8080 demo WAYBILL-02 delivery-002
 - 旧版已审批并冲正的退款保留原金额、数量及分录，升级时保持原库存余额。原待审申请可继续审核、寄回和验收。
 - 旧结算批次以「历史批次」保留并可导出。旧版未记录的结算月份、复核和银行流水保持为空。正常营业的旧店铺可由店主补录收款主体，核验通过后可冻结应结为正的新结算单。
 - 迁移 0017 从母订单回填子订单下单时间，并建立店铺与下单时间索引。按维护窗口停写后执行迁移，恢复服务后可从商家中心查询旧单。
-- 每分钟运行一次 `php bin/commerce.php expire`，单次最多释放 200 张超时订单，批量积压时可连续执行。
-- 有账单上传时运行 `php bin/commerce.php reconcile`，单次最多核对 100 条。自托管环境可用定时任务处理队列，积压时可连续执行。
+- Compose 自带后台任务。原生环境可在进程管理器下运行 `php bin/worker.php`，每轮释放至多 200 张超时订单、处理至多 100 条账单。也可单独手动运行 `php bin/commerce.php expire` 或 `php bin/commerce.php reconcile`。
 - 创建自有运营账号时，通过环境变量 `COMMERCE_OPERATOR_PASSWORD` 传入密码，并运行 `php bin/commerce.php operator admin operator@example.com`。分别为运营、财务和出纳创建独立账号，角色为 `admin`、`finance`、`payout`。
 - 在独立、库名以 `_test` 结尾的 MySQL 库设置 `APP_DEMO=1` 并执行迁移，然后运行 `php tests/integration.php`。并发库存用例需要 CLI 支持 `proc_open`。
 - 启动带种子数据的本机演示后，可用 `python tests/web_smoke.py` 验证各角色通过网页完成交易。为应用和测试进程配置支付、签收、退款三个沙箱密钥即可覆盖签名回执。
 - 支付、退款和签收回放使用独立演示数据库。真实支付网关、物流承运商适配、银行接口及第三方渠道订单同步待接入。
 
-[架构与业务规则](docs/architecture.md) · [容量验收与复现](docs/capacity.md) · [Apache License 2.0](LICENSE)
+[架构与业务规则](docs/architecture.md) · [部署与恢复](docs/deployment.md) · [容量验收与复现](docs/capacity.md) · [Apache License 2.0](LICENSE)

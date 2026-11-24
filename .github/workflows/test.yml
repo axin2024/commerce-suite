@@ -8,9 +8,13 @@ permissions:
 jobs:
   integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ['8.0', '8.4']
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: ci-test-only
           MYSQL_ROOT_HOST: '%'
@@ -34,8 +38,10 @@ jobs:
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
         run: |
+          if php bin/commerce.php health; then exit 1; fi
           php bin/commerce.php migrate
           php bin/commerce.php migrate
+          php bin/commerce.php health
           php tests/integration.php
       - name: Run browser-flow HTTP checks
         env:
@@ -46,10 +52,33 @@ jobs:
         run: |
           php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_suite_web_test CHARACTER SET utf8mb4");'
           export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_suite_web_test}"
-          php bin/commerce.php migrate
-          php bin/commerce.php seed
           php -S 127.0.0.1:8080 -t public > /tmp/commerce-web.log 2>&1 &
           server=$!
           trap 'kill "$server"' EXIT
-          curl --fail --silent --retry 5 --retry-connrefused http://127.0.0.1:8080/ -o /dev/null
+          for attempt in {1..10}; do
+            if code=$(curl --silent --max-time 3 http://127.0.0.1:8080/health.php -o /dev/null -w '%{http_code}'); then break; fi
+            sleep 1
+          done
+          test "$code" = 503
+          php bin/commerce.php migrate
+          php bin/commerce.php seed
           python3 tests/web_smoke.py
+  compose:
+    runs-on: ubuntu-latest
+    env:
+      COMMERCE_DB_PASSWORD: test-only-compose-app
+      MYSQL_ROOT_PASSWORD: test-only-compose-root
+      APP_DEMO: '1'
+      COMMERCE_SANDBOX_WEBHOOK_SECRET: test-only-compose-payment-secret-ci
+      COMMERCE_SANDBOX_SHIPPING_SECRET: test-only-compose-shipping-secret-ci
+      COMMERCE_SANDBOX_REFUND_SECRET: test-only-compose-refund-secret-ci
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --detach --build --wait --wait-timeout 120
+      - run: curl --fail --silent http://127.0.0.1:8080/health.php
+      - run: docker compose exec -T app php bin/commerce.php seed
+      - run: python3 tests/web_smoke.py
+      - if: failure()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down --volumes
