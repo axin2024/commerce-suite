@@ -160,7 +160,8 @@ try {
                     $qty = input('remove') === '1' ? 0 : number('quantity', 0, 99);
                     $revision = input('revision');
                     $selected = $revision === '' || input('selected') === '1';
-                    $app->setCartLine($id, $productId, $qty, $selected, $revision === '' ? null : $revision);
+                    $batch = input('preorder_batch') === '' ? null : number('preorder_batch');
+                    $app->setCartLine($id, $productId, $qty, $selected, $revision === '' ? null : $revision, $batch);
                     break;
                 case 'quote':
                     $next = 'cart';
@@ -253,6 +254,16 @@ try {
                     break;
                 case 'warehouse_create':
                     $app->createWarehouse($id, input('code'), input('name'), input('address'));
+                    break;
+                case 'preorder_create':
+                    $app->createPreorder($id, number('product'), number('warehouse'), input('code'),
+                        number('quota', 1, 1_000_000), input('cutoff'), input('expected'));
+                    break;
+                case 'preorder_close':
+                    $app->closePreorder($id, number('batch'));
+                    break;
+                case 'preorder_receive':
+                    $app->receivePreorder($id, number('batch'), number('units', 1, 1_000_000_000));
                     break;
                 case 'pickup_location_save':
                     $app->savePickupLocation($id, number('pickup_location', 0), number('warehouse', 0),

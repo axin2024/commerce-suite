@@ -81,6 +81,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
         <div class="record">
             <div><strong>#<?= e($order['id']) ?> · <?= cash($order['total']) ?></strong> <?= badge($order['status']) ?>
                 <p class="muted"><?= e($order['destination']) ?></p>
+                <?php if ($app->hasPendingPreorders((int) $order['id'])): ?><p class="muted">部分商品等待预售到货。</p><?php endif; ?>
                 <?php foreach ($app->rows('SELECT i.name,i.sku,i.quantity,r.color,r.size FROM order_items i
                     LEFT JOIN product_releases r ON r.id=i.product_release_id WHERE i.merchant_order_id=? ORDER BY i.id', [$order['id']]) as $line): ?>
                     <div><?= e($line['name']) ?> × <?= e($line['quantity']) ?>

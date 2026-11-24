@@ -124,11 +124,19 @@ trait InventoryOperations
 
     private function orderInventory(int $order, bool $consume): void
     {
-        $lines = $this->rows('SELECT i.id,i.product_id,i.quantity FROM order_items i
-            JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE m.order_id=? ORDER BY i.product_id', [$order]);
+        $lines = $this->rows('SELECT i.id,i.product_id,i.quantity,r.batch_id FROM order_items i
+            JOIN merchant_orders m ON m.id=i.merchant_order_id LEFT JOIN order_preorders r ON r.order_item_id=i.id
+            WHERE m.order_id=? ORDER BY i.product_id', [$order]);
         foreach ($lines as $line) {
+            if ($line['batch_id'] !== null) {
+                $this->one('SELECT id FROM products WHERE id=? FOR UPDATE', [$line['product_id']]);
+                if (!$this->settlePreorderAllocation((int) $line['id'], $consume)) {
+                    continue;
+                }
+            }
             $allocations = $this->rows("SELECT id,warehouse_id,quantity FROM order_inventory_allocations
-                WHERE order_item_id=? AND state='held' ORDER BY warehouse_id", [$line['id']]);
+                WHERE order_item_id=? AND state='held' ORDER BY warehouse_id"
+                . ($line['batch_id'] === null ? '' : ' FOR UPDATE'), [$line['id']]);
             if (array_sum(array_column($allocations, 'quantity')) !== (int) $line['quantity']) {
                 throw new LogicException('Order inventory holds do not match order quantities.');
             }

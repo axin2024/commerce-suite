@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/CatalogOperations.php';
 require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PickupOperations.php';
+require_once __DIR__ . '/PreorderOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
 
@@ -15,6 +16,7 @@ final class Commerce
     use CatalogOperations;
     use InventoryOperations;
     use PickupOperations;
+    use PreorderOperations;
     use PromotionOperations;
     use ShippingOperations;
 
@@ -306,22 +308,26 @@ final class Commerce
     {
         $this->actor($buyer, 'buyer');
         return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,p.shop_id,
-            r.color,r.size,s.name AS shop_name,
-            p.stock-p.reserved AS available,(p.status='active' AND s.status='active') AS on_sale
+            r.color,r.size,s.name AS shop_name,b.code AS preorder_code,b.expected_on,
+            CASE WHEN b.id IS NULL THEN p.stock-p.reserved ELSE b.quota-b.held-b.sold END AS available,
+            (p.status='active' AND s.status='active'
+                AND (b.id IS NULL OR (b.state='open' AND b.closes_at>UTC_TIMESTAMP()))) AS on_sale
             FROM cart_lines c JOIN products p ON p.id=c.product_id JOIN shops s ON s.id=p.shop_id
             LEFT JOIN product_releases r ON r.id=p.release_id
+            LEFT JOIN preorder_batches b ON b.id=c.preorder_batch_id
             WHERE c.buyer_id=? ORDER BY c.product_id", [$buyer]);
     }
 
-    public function setCartLine(int $buyer, int $product, int $quantity, bool $selected, ?string $revision = null): void
-    {
+    public function setCartLine(
+        int $buyer, int $product, int $quantity, bool $selected, ?string $revision = null, ?int $preorderBatch = null,
+    ): void {
         $this->actor($buyer, 'buyer');
         if ($quantity < 0 || $quantity > 99) {
             throw new RuleViolation('每种 SKU 的购买数量须为 1–99。');
         }
-        $this->transaction(function () use ($buyer, $product, $quantity, $selected, $revision): void {
+        $this->transaction(function () use ($buyer, $product, $quantity, $selected, $revision, $preorderBatch): void {
             $this->lockCart($buyer);
-            $line = $this->one('SELECT revision FROM cart_lines WHERE buyer_id=? AND product_id=?', [$buyer, $product]);
+            $line = $this->one('SELECT revision,preorder_batch_id FROM cart_lines WHERE buyer_id=? AND product_id=?', [$buyer, $product]);
             if ($revision !== null && ($line['revision'] ?? null) !== $revision) {
                 throw new RuleViolation('购物车已在其他页面更新，请刷新后重试。');
             }
@@ -329,22 +335,29 @@ final class Commerce
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND product_id=?', [$buyer, $product]);
                 return;
             }
-            if (!$line) {
+            if ($revision === null) {
                 $availability = $this->one("SELECT p.id FROM products p JOIN shops s ON s.id=p.shop_id
                     WHERE p.id=? AND p.status='active' AND s.status='active'", [$product]);
                 if (!$availability) {
                     throw new RuleViolation('该商品目前不可加入购物车。');
                 }
+                if ($preorderBatch !== null) {
+                    $this->selectPreorder($product, $preorderBatch, $quantity, false);
+                }
+            } else {
+                $preorderBatch = $line['preorder_batch_id'];
+            }
+            if (!$line) {
                 $count = (int) $this->one('SELECT COUNT(*) AS total FROM cart_lines WHERE buyer_id=?', [$buyer])['total'];
                 if ($count >= 30) {
                     throw new RuleViolation('购物车最多容纳 30 种 SKU。');
                 }
-                $this->query('INSERT INTO cart_lines (buyer_id,product_id,quantity,selected,revision) VALUES (?,?,?,?,?)',
-                    [$buyer, $product, $quantity, (int) $selected, bin2hex(random_bytes(16))]);
+                $this->query('INSERT INTO cart_lines (buyer_id,product_id,quantity,selected,revision,preorder_batch_id) VALUES (?,?,?,?,?,?)',
+                    [$buyer, $product, $quantity, (int) $selected, bin2hex(random_bytes(16)), $preorderBatch]);
                 return;
             }
-            $this->query('UPDATE cart_lines SET quantity=?,selected=?,revision=? WHERE buyer_id=? AND product_id=?',
-                [$quantity, (int) $selected, bin2hex(random_bytes(16)), $buyer, $product]);
+            $this->query('UPDATE cart_lines SET quantity=?,selected=?,revision=?,preorder_batch_id=? WHERE buyer_id=? AND product_id=?',
+                [$quantity, (int) $selected, bin2hex(random_bytes(16)), $preorderBatch, $buyer, $product]);
         });
     }
 
@@ -376,10 +389,11 @@ final class Commerce
 
     private function selectedCart(int $buyer): array
     {
-        $lines = $this->rows('SELECT product_id,quantity,revision FROM cart_lines
+        $lines = $this->rows('SELECT product_id,quantity,revision,preorder_batch_id FROM cart_lines
             WHERE buyer_id=? AND selected=1 ORDER BY product_id', [$buyer]);
         return [array_map('intval', array_column($lines, 'quantity', 'product_id')),
-            array_column($lines, 'revision', 'product_id')];
+            array_column($lines, 'revision', 'product_id'),
+            array_filter(array_column($lines, 'preorder_batch_id', 'product_id'), static fn(?int $id): bool => $id !== null)];
     }
 
     public static function allocate(int $amount, array $weights): array
@@ -406,13 +420,16 @@ final class Commerce
     }
 
     private function priceCart(
-        int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations,
+        int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations, array $preorders,
     ): array {
         $pickup = $channel === 'store';
         $destination = $pickup ? '门店自提' : trim($destination);
         if (!in_array($channel, ['web', 'store'], true) || $destination === '' || strlen($destination) > 250
             || !$cart || count($cart) > 30 || (!$pickup && $pickupLocations)) {
             throw new RuleViolation('请选择履约方式，配送需填写地址，购物车最多容纳 30 种 SKU。');
+        }
+        if (array_diff_key($preorders, $cart)) {
+            throw new RuleViolation('预售批次与当前商品不符，请刷新。');
         }
         $member = $this->one('SELECT member_level FROM users WHERE id=?' . ($lock ? ' FOR SHARE' : ''), [$buyer]);
         $hasMemberPrice = $member['member_level'] === 'plus';
@@ -435,7 +452,11 @@ final class Commerce
             if (!$product[$channel === 'web' ? 'delivery' : 'pickup']) {
                 throw new RuleViolation('有商品不支持当前履约方式，请调整商品或渠道。');
             }
-            if ((int) $product['stock'] - (int) $product['reserved'] < $quantity) {
+            $batchId = $preorders[$id] ?? null;
+            if (array_key_exists($id, $preorders) && (!is_int($batchId) || $batchId < 1)) {
+                throw new RuleViolation('请选择有效的预售批次。');
+            }
+            if ($batchId === null && (int) $product['stock'] - (int) $product['reserved'] < $quantity) {
                 throw new RuleViolation('商品可用库存不足，请调整购买数量。');
             }
             $shopId = (int) $shop['id'];
@@ -450,7 +471,13 @@ final class Commerce
                 }
             }
             $price = (int) $product['price'];
-            $allocation = $this->allocateWarehouses($id, $quantity, $shops[$shopId]['pickup']['warehouse_id'] ?? null, $lock);
+            $pickupWarehouse = $shops[$shopId]['pickup']['warehouse_id'] ?? null;
+            $batch = $batchId === null ? null : $this->selectPreorder($id, $batchId, $quantity, $lock);
+            if ($batch && $pickupWarehouse !== null && $batch['warehouse_id'] !== $pickupWarehouse) {
+                throw new RuleViolation('该预售批次无法在所选门店提货，请选择其对应门店。');
+            }
+            $allocation = $batch ? [$batch['warehouse_id'] => $quantity]
+                : $this->allocateWarehouses($id, $quantity, $pickupWarehouse, $lock);
             $items[$id] = [
                 'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'], 'release_id' => (int) $product['release_id'],
                 'category_id' => $product['category_id'] === null ? null : (int) $product['category_id'],
@@ -458,6 +485,9 @@ final class Commerce
                 'unit_price' => $hasMemberPrice ? (int) ($product['member_price'] ?? $price) : $price,
                 'fee_bps' => (int) $shop['commission_bps'], 'allocation' => $allocation,
             ];
+            if ($batch) {
+                $items[$id]['preorder'] = $batch;
+            }
             foreach ($allocation as $warehouse => $units) {
                 $shops[$shopId]['warehouses'][$warehouse] = ($shops[$shopId]['warehouses'][$warehouse] ?? 0) + $units;
             }
@@ -487,16 +517,17 @@ final class Commerce
         ksort($shops);
         return [
             'cart' => $cart, 'channel' => $channel, 'destination' => $destination, 'coupon' => $coupon, 'promotion' => $offer['promotion'],
-            'pickup_locations' => $pickupLocations,
+            'pickup_locations' => $pickupLocations, 'preorders' => $preorders,
             'items' => $items, 'shops' => $shops, 'subtotal' => $subtotal,
             'member_savings' => $memberSavings, 'discount' => $discount, 'shipping' => $shipping, 'total' => $subtotal - $discount + $shipping,
         ];
     }
 
-    public function quote(int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = []): array
-    {
+    public function quote(
+        int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = [], array $preorders = [],
+    ): array {
         $this->actor($buyer, 'buyer');
-        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations));
+        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations, $preorders));
     }
 
     public function quoteCart(int $buyer, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = []): array
@@ -504,11 +535,11 @@ final class Commerce
         $this->actor($buyer, 'buyer');
         return $this->transaction(function () use ($buyer, $channel, $destination, $coupon, $pickupLocations): array {
             $this->lockCart($buyer);
-            [$cart, $revisions] = $this->selectedCart($buyer);
+            [$cart, $revisions, $preorders] = $this->selectedCart($buyer);
             if (!$cart) {
                 throw new RuleViolation('请先勾选要结算的商品。');
             }
-            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations);
+            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations, $preorders);
             $snapshot['cart_revisions'] = $revisions;
             return $this->recordQuote($buyer, $snapshot);
         });
@@ -544,6 +575,7 @@ final class Commerce
                 throw new RuleViolation('请选择自提门店并重新计算费用。');
             }
             $snapshot['pickup_locations'] ??= [];
+            $snapshot['preorders'] ??= [];
             $cartRevisions = $snapshot['cart_revisions'] ?? null;
             unset($snapshot['cart_revisions']);
             if ($requireCartQuote && $cartRevisions === null) {
@@ -566,7 +598,7 @@ final class Commerce
                 }
             }
             $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'],
-                $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations']);
+                $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations'], $snapshot['preorders']);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
                 throw new RuleViolation('商品、价格或分仓结果已变化，请重新报价。');
@@ -596,7 +628,11 @@ final class Commerce
                     VALUES (?,?,?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
                         $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price']]);
-                $this->reserveInventory($line, $product, $item['allocation']);
+                if (isset($item['preorder'])) {
+                    $this->reservePreorder($line, $item['preorder']['id'], $item['quantity']);
+                } else {
+                    $this->reserveInventory($line, $product, $item['allocation']);
+                }
             }
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);

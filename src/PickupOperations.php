@@ -116,6 +116,9 @@ trait PickupOperations
             if ($record['status'] !== 'ready') {
                 throw new RuleViolation('订单尚未付款或已完成。');
             }
+            if ($this->hasPendingPreorders($order)) {
+                throw new RuleViolation('该单还有预售商品未到货。');
+            }
             if (!$record['prepared_at']) {
                 $this->query('UPDATE order_pickups SET prepared_at=UTC_TIMESTAMP(),prepared_by=? WHERE merchant_order_id=?',
                     [$merchant, $order]);

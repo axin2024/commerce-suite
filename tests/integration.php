@@ -35,15 +35,21 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
-if (in_array($worker, ['race-worker', 'pickup-worker'], true)) {
+if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
         if ($worker === 'race-worker') {
             $app->place((int) $argv[2], $argv[3]);
             echo "placed\n";
-        } else {
+        } elseif ($worker === 'pickup-worker') {
             echo $app->redeemPickup((int) $argv[2], (int) $argv[3], (int) $argv[4], $argv[5]) ? "redeemed\n" : "already-redeemed\n";
+        } elseif ($argv[2] === 'receive') {
+            $app->receivePreorder((int) $argv[3], (int) $argv[4], (int) $argv[5]);
+            echo "received\n";
+        } else {
+            $app->demoPay((int) $argv[3], (int) $argv[4], $argv[5], (int) $argv[6]);
+            echo "paid\n";
         }
     } catch (RuleViolation) {
         echo "unavailable\n";
@@ -529,6 +535,118 @@ same('refund_required', $receipt($intent($unprocessed), "expires-before-worker-$
     'late receipt before worker recorded for refund');
 same(false, $app->cancel($unprocessed), 'late receipt closed expired order and released its hold');
 same(0, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$b])[0]['reserved'], 'late receipt releases expired stock once');
+
+$preRelease = $app->submitSku($north, 0, "PRE-$tag", '未来批次', 700, 0, $home, '预售回归', '', '', true, true);
+$preSku = $app->reviewSku($admin, $preRelease, true);
+$cutoff = gmdate('Y-m-d\TH:i', time() + 7200);
+$expected = gmdate('Y-m-d', time() + 172800);
+denied(fn() => $app->createPreorder($north, $preSku, $foreignWarehouse, 'CROSS', 5, $cutoff, $expected),
+    'preorder batch requires a warehouse of the SKU shop');
+denied(fn() => $app->createPreorder($fulfillmentStaff, $preSku, $east, 'ROLE', 5, $cutoff, $expected),
+    'batch creation requires catalog permission');
+denied(fn() => $app->createPreorder($north, $preSku, $east, 'DATE', 5, $cutoff, '2000-01-01'),
+    'arrival date cannot precede the cutoff');
+$batch = $app->createPreorder($catalogStaff, $preSku, $east, 'LOT-A', 5, $cutoff, $expected);
+$preorder = [$preSku => $batch];
+$preStock = static fn(): array => array_values($app->rows('SELECT stock,reserved FROM products WHERE id=?', [$preSku])[0]);
+$quota = static fn(int $id): array => array_values($app->rows('SELECT held,sold FROM preorder_batches WHERE id=?', [$id])[0]);
+$childOrder = static fn(int $parent): int => (int) $app->rows('SELECT id FROM merchant_orders WHERE order_id=?', [$parent])[0]['id'];
+$childStatus = static fn(int $child): string => $app->rows('SELECT status FROM merchant_orders WHERE id=?', [$child])[0]['status'];
+denied(fn() => $app->createPreorder($north, $preSku, $east, 'lot-a', 5, $cutoff, $expected), 'same SKU lot cannot be published twice');
+denied(fn() => $app->quote($buyer, [$preSku => 1], 'web', '预售测试地址'), 'preorder quota does not appear as physical stock');
+denied(fn() => $app->setCartLine($buyer, $a, 1, true, preorderBatch: $batch), 'batch selection belongs to the given SKU');
+denied(fn() => $app->quote($buyer, [$preSku => 6], 'web', '预售测试地址', preorders: $preorder), 'quota is checked at quote');
+denied(fn() => $app->quote($buyer, [$preSku => 1], 'store', '', pickupLocations: $northLocations, preorders: $preorder),
+    'preorder cannot use a different store inventory');
+$app->savePickupLocation($north, $eastPickup, 0, 'EAST', '东区自提门店', '东区 16 号', true);
+same('东区自提门店', $app->catalogPreorders([$preSku], 'store')[0]['pickup_name'], 'displays batch availability in selected channel');
+$app->setCartLine($buyer, $preSku, 1, true, preorderBatch: $batch);
+$line = array_column($app->cartLines($buyer), null, 'product_id')[$preSku];
+same('LOT-A', $line['preorder_code'], 'cart persists the exact batch');
+$app->setCartLine($buyer, $preSku, 2, true, $line['revision']);
+$cartPre = $app->quoteCart($buyer, 'web', '预售测试地址');
+same([$preSku => $batch], $cartPre['preorders'], 'quantity edit preserves preorder choice');
+$app->setCartLine($buyer, $preSku, 0, false);
+denied(fn() => $app->place($buyer, $cartPre['token'], true), 'cart mode changes invalidate earlier quote');
+$mixedQuote = $app->quote($buyer, [$a => 1, $preSku => 2], 'web', '预售测试地址', preorders: $preorder);
+same(1600, $mixedQuote['shipping'], 'preorder and current stock ship from their assigned warehouses');
+$mixedOrder = $app->place($buyer, $mixedQuote['token']);
+$mixedChild = $childOrder($mixedOrder);
+$pickupQuote = $app->quote($buyer, [$preSku => 1], 'store', '', pickupLocations: $eastLocations, preorders: $preorder);
+$prePickup = $app->place($buyer, $pickupQuote['token']);
+$prePickupChild = $childOrder($prePickup);
+$waiting = $app->quote($otherBuyer, [$preSku => 1], 'web', '预售测试地址', preorders: $preorder);
+$payAfterArrival = $app->place($otherBuyer, $waiting['token']);
+$otherWaiting = $app->quote($otherBuyer, [$preSku => 1], 'web', '预售测试地址', preorders: $preorder);
+$cancelAfterArrival = $app->place($otherBuyer, $otherWaiting['token']);
+same([5, 0], $quota($batch), 'pending orders hold their exact batch capacity');
+same([0, 0], $preStock(), 'batch holds do not change physical inventory');
+$app->demoPay($buyer, $mixedOrder, "mixed-$tag", $mixedQuote['total']);
+$app->demoPay($buyer, $prePickup, "pre-pickup-$tag", $pickupQuote['total']);
+same([2, 3], $quota($batch), 'payment consumes quota while warehouse is not received');
+same([0, 0], $preStock(), 'early payment does not deduct unavailable physical units');
+same([], $app->catalogPreorders([$preSku], 'web'), 'sold or held-out batch is hidden on the shelf');
+denied(fn() => $app->preparePickup($eastStaff, $prePickupChild, $eastPickup), 'paid preorder cannot be prepared before arrival');
+$normalLine = $app->unshippedLines($mixedChild)[0];
+same($main, $normalLine['warehouse_id'], 'only current stock is dispatchable before receipt');
+$trackingStock = "PR-STOCK-$tag";
+$app->dispatchShipment($north, $mixedChild, $main, 'demo', $trackingStock, [$normalLine['id'] => 1], bin2hex(random_bytes(16)));
+$app->recordDelivery('demo', $trackingStock, "pre-stock-$tag");
+same('partial', $childStatus($mixedChild), 'ship and deliver current stock while preorder remains open');
+same([], $app->rows('SELECT id FROM ledger WHERE merchant_order_id=?', [$mixedChild]), 'waiting preorder blocks sales completion');
+denied(fn() => $app->receivePreorder($pond, $batch, 6), 'other merchant cannot receive stock');
+denied(fn() => $app->receivePreorder($north, $batch, 4), 'arrival cannot short the paid and reserved obligations');
+$app->closePreorder($catalogStaff, $batch);
+$app->receivePreorder($catalogStaff, $batch, 6);
+$app->receivePreorder($catalogStaff, $batch, 6);
+denied(fn() => $app->receivePreorder($catalogStaff, $batch, 7), 'receipt replay cannot alter the received quantity');
+same([3, 2], $preStock(), 'arrival reserves pending units and recognizes physical surplus');
+same([3, 2], array_values($app->rows('SELECT stock,reserved FROM warehouse_stock WHERE product_id=? AND warehouse_id=?',
+    [$preSku, $east])[0]), 'new warehouse balance mirrors converted holds');
+$app->demoPay($otherBuyer, $payAfterArrival, "pre-pay-after-$tag", 1500);
+same(true, $app->cancel($cancelAfterArrival, $otherBuyer), 'cancellation releases a converted physical hold');
+same([2, 0], $preStock(), 'payment after arrival deducts exactly one and cancellation releases one');
+same([0, 4], $quota($batch), 'converted orders also close their quota ledger');
+$preLine = $app->unshippedLines($mixedChild)[0];
+same([$east, 2], [$preLine['warehouse_id'], (int) $preLine['remaining']], 'received paid lines become dispatchable in final warehouse');
+$trackingPre = "PR-ARR-$tag";
+$app->dispatchShipment($north, $mixedChild, $east, 'demo', $trackingPre, [$preLine['id'] => 2], bin2hex(random_bytes(16)));
+$app->recordDelivery('demo', $trackingPre, "pre-arrived-$tag");
+same('fulfilled', $childStatus($mixedChild), 'final preorder parcel finishes the mixed child order');
+same(1, count($app->rows('SELECT id FROM ledger WHERE merchant_order_id=?', [$mixedChild])), 'final mixed delivery records one sale');
+$app->preparePickup($eastStaff, $prePickupChild, $eastPickup);
+same(true, $app->redeemPickup($eastStaff, $prePickupChild, $eastPickup, $app->issuePickupCode($buyer, $prePickupChild)),
+    'received preorder can be collected at the original store');
+
+$lastBatch = $app->createPreorder($north, $preSku, $east, 'LAST', 1, $cutoff, $expected);
+$lastPreorder = [$preSku => $lastBatch];
+$left = $app->quote($buyer, [$preSku => 1], 'web', '预约地址', preorders: $lastPreorder);
+$right = $app->quote($otherBuyer, [$preSku => 1], 'web', '预约地址', preorders: $lastPreorder);
+same(['placed', 'unavailable'], compete('race-worker', [[$buyer, $left['token']], [$otherBuyer, $right['token']]]),
+    'two buyers cannot reserve the last preorder unit');
+$winner = $app->rows('SELECT order_id AS id,buyer_id FROM quotes WHERE token IN (?,?) AND order_id IS NOT NULL',
+    [$left['token'], $right['token']])[0];
+$db->prepare('UPDATE orders SET expires_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=?')->execute([$winner['id']]);
+same(true, $app->expireOrders() >= 1, 'expired preorder order is closed');
+same([0, 0], $quota($lastBatch), 'timeout releases preorder capacity for resale');
+[$nextBuyer, $nextQuote] = $winner['buyer_id'] === $buyer ? [$otherBuyer, $right] : [$buyer, $left];
+$nextOrder = $app->place($nextBuyer, $nextQuote['token']);
+same('refund_required', $receipt($intent($winner['id']), "late-pre-$tag", 1500)['status'],
+    'late capture cannot reclaim a resold preorder unit');
+same([1, 0], $quota($lastBatch), 'late webhook leaves the new hold intact');
+same(['paid', 'received'], compete('preorder-worker', [
+    ['receive', $north, $lastBatch, 1],
+    ['pay', $nextBuyer, $nextOrder, "arrival-race-$tag", 1500],
+]), 'arrival and payment serialize on the batch');
+same([0, 1], $quota($lastBatch), 'arrival race leaves one paid unit');
+same([2, 0], $preStock(), 'arrival race never leaks or double deducts physical stock');
+same(1, count($app->unshippedLines($childOrder($nextOrder))), 'arrival race produces one dispatchable allocation');
+
+$endingBatch = $app->createPreorder($north, $preSku, $east, 'ENDING', 2, $cutoff, $expected);
+$endingQuote = $app->quote($buyer, [$preSku => 1], 'web', '预约地址', preorders: [$preSku => $endingBatch]);
+$db->prepare('UPDATE preorder_batches SET closes_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=?')->execute([$endingBatch]);
+denied(fn() => $app->place($buyer, $endingQuote['token']), 'batch expiry prevents consuming an old quote');
+
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
 denied(fn() => $receipt($intent($resaleOrder), "disabled-$tag", 200), 'webhook processing requires sandbox opt-in');

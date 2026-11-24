@@ -63,14 +63,19 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                         <?php endif; ?>
                     <?php endif; ?>
                 <?php endif; ?>
-                <?php foreach ($app->rows('SELECT i.*,r.color,r.size,
+                <?php foreach ($app->rows('SELECT i.*,r.color,r.size,b.code AS preorder_code,b.expected_on,b.received_at,
                     (SELECT COALESCE(SUM(r.quantity),0) FROM refunds r WHERE r.item_id=i.id AND r.status=\'pending\') AS pending_qty
                     FROM order_items i LEFT JOIN product_releases r ON r.id=i.product_release_id
+                    LEFT JOIN order_preorders op ON op.order_item_id=i.id LEFT JOIN preorder_batches b ON b.id=op.batch_id
                     WHERE i.merchant_order_id=? ORDER BY i.id', [$merchantOrder['id']]) as $item):
                     $remaining = (int) $item['quantity'] - (int) $item['refunded_quantity'] - (int) $item['pending_qty']; ?>
                     <div class="record">
                         <div><?= e($item['name']) ?> × <?= e($item['quantity']) ?>
                             <div class="muted"><?= e($item['sku']) ?> <?= e(trim((string) $item['color'] . ' ' . (string) $item['size'])) ?></div>
+                            <?php if ($item['preorder_code']): ?>
+                                <div class="muted">预售 <?= e($item['preorder_code']) ?> ·
+                                    <?= $item['received_at'] ? '已到货' : '预计 ' . e($item['expected_on']) . ' 到货' ?></div>
+                            <?php endif; ?>
                             <div class="muted">实付 <?= cash($item['quantity'] * $item['unit_price'] - $item['discount']) ?> · 已退 <?= e($item['refunded_quantity']) ?></div></div>
                         <?php if ($merchantOrder['status'] === 'fulfilled' && $remaining > 0): ?>
                             <details><summary>申请退款</summary>

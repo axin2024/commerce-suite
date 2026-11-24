@@ -6,6 +6,10 @@ $balances = [];
 foreach ($app->merchantStock((int) $user['id']) as $balance) {
     $balances[$balance['product_id']][$balance['warehouse_id']] = $balance;
 }
+$productBatches = [];
+foreach ($app->merchantPreorders((int) $user['id']) as $batch) {
+    $productBatches[$batch['product_id']][] = $batch;
+}
 $releaseStates = ['legacy' => '旧版导入', 'pending' => '待审核', 'approved' => '通过', 'rejected' => '拒绝', 'withdrawn' => '已撤回'];
 $skuForm = static function (?array $product) use ($categories): void {
     $current = $product['proposed_price'] ?? $product['price'] ?? null;
@@ -84,6 +88,10 @@ $skuForm = static function (?array $product) use ($categories): void {
                 </div>
                 </form>
             <?php endforeach; ?>
+            <?php $batches = $productBatches[$product['id']] ?? [];
+            if ($batches || $product['status'] === 'active') {
+                require __DIR__ . '/preorder_catalog.php';
+            } ?>
             <?php if ($product['status'] === 'active' || $product['review_state'] === 'pending'):
                 form('sku_unlist'); echo field('product', $product['id']); ?>
                 <button class="secondary"><?= $product['status'] === 'active' ? '立即下架' : '撤回待审版本' ?></button></form>

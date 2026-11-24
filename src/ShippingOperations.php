@@ -48,7 +48,7 @@ trait ShippingOperations
                     $this->query('INSERT INTO shipment_items (shipment_id,allocation_id,quantity) VALUES (?,?,?)',
                         [$id, $allocation, $count]);
                 }
-                $status = $this->unshippedLines($orderId) ? 'partial' : 'shipped';
+                $status = $this->unshippedLines($orderId) || $this->hasPendingPreorders($orderId) ? 'partial' : 'shipped';
                 $this->query('UPDATE merchant_orders SET status=? WHERE id=?', [$status, $orderId]);
                 $this->audit($merchant, 'shipping.dispatched', $id, ['merchant_order_id' => $orderId, 'warehouse_id' => $warehouse]);
                 return $id;

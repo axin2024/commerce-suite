@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 
@@ -297,3 +298,48 @@ if SHIPPING_SECRET:
     assert tracking_a in delivered and tracking_b in delivered and delivered.count("已签收") == 2 and "已履约" in delivered
     assert "¥52.00" in owner.load("/?page=merchant").split('id="finance"', 1)[1]
     print("Delivery web flow passed: split freight, warehouse stock, parcel dispatch, signed delivery, and sale ledger.")
+
+pre_sku = f"PRE-{suffix}"
+owner.submit("/?page=merchant", "sku_submit", product=0, revision=0, sku=pre_sku, name="预售验收款", family="预售验收系列",
+             category=category[1], price="23.00", stock=0, pickup=1)
+admin.submit("/?page=platform", "sku_review", release=extract(admin.load("/?page=platform"), "release"), decision="approve")
+listing = f"/?q={pre_sku}&channel=store"
+assert "可售 0" in buyer.load(listing) and "选购此批次" not in buyer.load(listing)
+product_panel = owner.load("/?page=merchant").split(f" · {pre_sku} · ", 1)[1]
+create_batch = forms(product_panel, "preorder_create")[0]
+pre_product = extract(create_batch, "product")
+pre_warehouse = re.search(r'<option value="(\d+)">主仓</option>', create_batch)[1]
+now = datetime.now(timezone.utc)
+cutoff = (now + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M")
+expected = (now + timedelta(days=2)).strftime("%Y-%m-%d")
+owner.submit("/?page=merchant", "preorder_create", product=pre_product, warehouse=pre_warehouse, code="SPRING",
+             quota=2, cutoff=cutoff, expected=expected)
+on_sale = buyer.load(listing)
+assert "预售 SPRING" in on_sale and f"预计 {expected} 到货" in on_sale
+batch = extract(on_sale, "preorder_batch")
+assert "可在商品验收自提点自提" in on_sale
+if not SHIPPING_SECRET:
+    buyer.submit("/?page=cart", "cart", product=variant_product, remove=1)
+put_in_cart = buyer.submit(listing, "cart", product=pre_product, preorder_batch=batch, quantity=1)
+assert "预售 SPRING" in put_in_cart
+pre_quote = buyer.submit("/?page=cart", "quote", channel="store", **pickup_choices(put_in_cart))
+assert "预售 SPRING" in pre_quote and "¥23.00" in pre_quote
+created = buyer.submit("/?page=cart", "place", token=extract(pre_quote, "token"))
+buyer.submit("/?page=orders", "pay", order=extract(created, "order"), amount=2300)
+awaiting = owner.load("/?page=merchant")
+assert "等待预售到货" in awaiting and not forms(awaiting, "pickup_prepare")
+closed = owner.submit("/?page=merchant", "preorder_close", batch=batch)
+assert "已截单" in closed and "选购此批次" not in buyer.load(listing)
+stocked = owner.submit("/?page=merchant", "preorder_receive", batch=batch, units=2)
+assert "已入库" in stocked and "实收到货 2 件" in stocked
+assert "可售 1" in buyer.load(listing) and "选购此批次" not in buyer.load(listing)
+prepare_form, = forms(stocked, "pickup_prepare")
+pre_child = extract(prepare_form, "merchant_order")
+pre_location = extract(prepare_form, "pickup_location")
+owner.submit("/?page=merchant", "pickup_prepare", merchant_order=pre_child, pickup_location=pre_location)
+ready = buyer.submit("/?page=orders", "pickup_issue", merchant_order=pre_child)
+pickup_code = re.search(r"提货码 <code>([A-F0-9]{16})</code>", ready)[1]
+assert "预售 SPRING" in ready and "已到货" in ready
+assert "已完成提货核销" in owner.submit("/?page=merchant", "pickup_redeem", merchant_order=pre_child,
+                                   pickup_location=pre_location, code=pickup_code)
+print("Preorder web flow passed: publish, cart, payment, cutoff, warehouse receipt, and store pickup.")

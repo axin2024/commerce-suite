@@ -3,6 +3,10 @@ $search = is_string($_GET['q'] ?? null) && strlen($_GET['q']) <= 150 ? $_GET['q'
 $categoryFilter = filter_var($_GET['category'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null;
 $channelFilter = in_array($_GET['channel'] ?? '', ['web', 'store'], true) ? $_GET['channel'] : '';
 $products = $app->catalog($search, $categoryFilter, $channelFilter);
+$preorders = [];
+foreach ($app->catalogPreorders(array_column($products, 'id'), $channelFilter) as $batch) {
+    $preorders[$batch['product_id']][] = $batch;
+}
 $offers = $app->promotionOffers();
 $claimed = $role === 'buyer' ? array_column($app->buyerCoupons((int) $user['id']), 'status', 'id') : [];
 ?>
@@ -73,6 +77,25 @@ $claimed = $role === 'buyer' ? array_column($app->buyerCoupons((int) $user['id']
                 <?php elseif ($role === 'guest' && $available): ?>
                     <a class="button secondary" href="/?page=account">登录后选购</a>
                 <?php endif; ?>
+                <?php foreach ($preorders[$p['id']] ?? [] as $batch): ?>
+                    <div class="inventory">
+                        <strong>预售 <?= e($batch['code']) ?></strong>
+                        <p class="muted">预计 <?= e($batch['expected_on']) ?> 到货 · 剩余 <?= e($batch['available']) ?> 件</p>
+                        <?php if ($batch['pickup_name'] && $channelFilter !== 'web'): ?>
+                            <p class="muted">可在<?= e($batch['pickup_name']) ?>自提</p>
+                        <?php endif; ?>
+                        <?php if ($role === 'buyer'):
+                            form('cart'); echo field('product', $p['id']), field('preorder_batch', $batch['id']); ?>
+                            <div class="inline">
+                                <input type="number" name="quantity" min="1" max="<?= min(99, $batch['available']) ?>" value="1"
+                                    aria-label="预售购买数量" required>
+                                <button class="secondary">选购此批次</button>
+                            </div></form>
+                        <?php elseif ($role === 'guest'): ?>
+                            <a class="button secondary" href="/?page=account">登录后预订</a>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
             </article>
         <?php endforeach; ?>
     </div>

@@ -42,11 +42,13 @@
     </form>
     <?php if (!$pickupOrders): ?><p class="muted">暂无匹配的已付款自提单。</p><?php endif; ?>
     <?php foreach ($pickupOrders as $pickupOrder): ?>
+        <?php $awaitingStock = $pickupOrder['status'] === 'ready' && $app->hasPendingPreorders((int) $pickupOrder['id']); ?>
         <div class="record">
             <div>
                 <strong>子订单 #<?= e($pickupOrder['id']) ?> · <?= e($pickupOrder['location_name']) ?></strong>
                 <?php if ($pickupOrder['used_at']): ?><?= badge('fulfilled') ?>
                 <?php elseif ($pickupOrder['prepared_at']): ?><?= badge('pickup_prepared') ?>
+                <?php elseif ($awaitingStock): ?><span class="badge">等待预售到货</span>
                 <?php else: ?><?= badge('pickup_pending') ?><?php endif; ?>
                 <p class="muted"><?= e($pickupOrder['location_address']) ?></p>
                 <?php foreach ($app->rows('SELECT sku,name,quantity FROM order_items WHERE merchant_order_id=? ORDER BY id',
@@ -54,7 +56,7 @@
                     <div><?= e($line['name']) ?> × <?= e($line['quantity']) ?> <span class="muted"><?= e($line['sku']) ?></span></div>
                 <?php endforeach; ?>
             </div>
-            <?php if ($pickupOrder['status'] === 'ready'):
+            <?php if ($pickupOrder['status'] === 'ready' && !$awaitingStock):
                 form($pickupOrder['prepared_at'] ? 'pickup_redeem' : 'pickup_prepare');
                 echo field('merchant_order', $pickupOrder['id']), field('pickup_location', $pickupOrder['pickup_location_id']); ?>
                 <?php if ($pickupOrder['prepared_at']): ?>

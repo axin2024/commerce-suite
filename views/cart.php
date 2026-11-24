@@ -10,8 +10,11 @@
                     <div><strong><?= e($line['name']) ?></strong>
                         <div class="muted"><?= e($line['shop_name']) ?> · <?= e($line['sku']) ?>
                             <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?> · <?= cash($line['price']) ?></div>
+                        <?php if ($line['preorder_code']): ?>
+                            <div class="muted">预售 <?= e($line['preorder_code']) ?> · 预计 <?= e($line['expected_on']) ?> 到货</div>
+                        <?php endif; ?>
                         <?php if (!$line['on_sale'] || $line['available'] < $line['quantity']): ?>
-                            <div class="muted"><?= $line['on_sale'] ? '可用库存不足' : '暂停销售' ?></div>
+                            <div class="muted"><?= $line['on_sale'] ? ($line['preorder_code'] ? '预售剩余额度不足' : '可用库存不足') : '暂停销售' ?></div>
                         <?php endif; ?>
                     </div>
                     <?php form('cart'); echo field('product', $line['product_id']), field('revision', $line['revision']); ?>
@@ -87,6 +90,12 @@
                         <?php endforeach; ?>
                     </ul>
                 <?php endif; ?>
+                <?php foreach ($quote['items'] as $item): ?>
+                    <?php if (isset($item['preorder'])): ?>
+                        <p class="muted"><?= e($item['name']) ?> · 预售 <?= e($item['preorder']['code']) ?>
+                            · 预计 <?= e($item['preorder']['expected_on']) ?> 到货</p>
+                    <?php endif; ?>
+                <?php endforeach; ?>
                 <?php form('place'); echo field('token', $quote['token']); ?>
                 <button>确认订单</button></form>
             <?php endif; ?>
