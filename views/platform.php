@@ -88,28 +88,28 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
         </table></div>
     <?php endif; ?>
 </section>
-<?php if (demoEnabled() || ($role === 'finance' && $receiptId)): ?>
 <section class="panel" id="receipts">
-    <h2>沙箱支付回执</h2>
+    <h2>渠道支付回执</h2>
     <?php
     $receiptStates = ['accepted' => '已入账', 'refund_required' => '待原路退回',
         'needs_review' => '待核对', 'refunded' => '已登记退回'];
-    $receiptReasons = ['unknown_intent' => '找不到支付意图', 'amount_or_currency_mismatch' => '金额或币种差异',
+    $receiptReasons = ['unknown_intent' => '找不到支付意图', 'channel_mismatch' => '回执渠道与订单不符',
+        'amount_or_currency_mismatch' => '金额或币种差异',
         'duplicate_charge' => '同订单重复实收', 'late_capture' => '订单关闭后实收'];
-    $receipts = $app->rows('SELECT id,reference,status,order_id,currency,amount,failure_code,refund_reference,received_at
+    $receipts = $app->rows('SELECT id,provider,reference,status,order_id,currency,amount,failure_code,refund_reference,received_at
         FROM payment_receipts' . ($receiptId ? ' WHERE id=?' : '') . ' ORDER BY id DESC LIMIT 100', $receiptId ? [$receiptId] : []);
     ?>
-    <?php if (!$receipts): ?><p class="muted">暂无外部沙箱回执。</p><?php endif; ?>
+    <?php if (!$receipts): ?><p class="muted">暂无渠道回执。</p><?php endif; ?>
     <?php foreach ($receipts as $receipt): ?>
         <div class="record">
-            <div><strong><?= e($receipt['reference']) ?> · <?= e($receiptStates[$receipt['status']]) ?></strong>
+            <div><strong><?= e($receipt['provider']) ?> · <?= e($receipt['reference']) ?> · <?= e($receiptStates[$receipt['status']]) ?></strong>
                 <p class="muted"><?= e($receipt['order_id'] ? '订单 #' . $receipt['order_id'] : '待匹配订单') ?> ·
                     <?= e($receipt['currency']) ?> <?= e($receipt['amount']) ?>（最小货币单位）
                     · <?= e($receipt['received_at']) ?> UTC</p>
                 <?php if ($receipt['failure_code']): ?><p><?= e($receiptReasons[$receipt['failure_code']]) ?></p><?php endif; ?>
                 <?php if ($receipt['refund_reference']): ?><p>退款回执 <?= e($receipt['refund_reference']) ?></p><?php endif; ?>
             </div>
-            <?php if ($role === 'finance' && demoEnabled() && $receipt['status'] === 'refund_required'):
+            <?php if ($role === 'finance' && $receipt['provider'] === 'sandbox' && demoEnabled() && $receipt['status'] === 'refund_required'):
                 form('sandbox_refund'); echo field('receipt', $receipt['id']); ?>
                 <label>退款回执号<input name="reference" maxlength="80" required></label>
                 <button class="secondary">登记渠道退款</button></form>
@@ -117,14 +117,13 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
         </div>
     <?php endforeach; ?>
 </section>
-<?php endif; ?>
 <?php if ($role === 'finance') { require __DIR__ . '/return_freight.php'; } ?>
-<?php if ($role === 'finance' && (sandboxRefundSecret() !== null || $returnReceiptId)): ?>
+<?php if ($role === 'finance'): ?>
 <section class="panel" id="return-refunds">
     <h2>退货退款回执</h2>
     <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,r.freight_amount,r.freight_payer,
         r.points_spent,r.points_restored,r.points_reversed,
-        p.reference AS payment_reference,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
+        p.reference AS payment_reference,p.provider AS payment_provider,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
         JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN shops s ON s.id=m.shop_id
         JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')"
         . ($returnReceiptId ? ' AND r.id=?' : '') . " ORDER BY (r.status='refund_pending') DESC,r.id DESC LIMIT 50",
@@ -141,9 +140,14 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
                 <?php if ($returnReceipt['points_spent'] || $returnReceipt['points_reversed']): ?>
                     <p>返还抵扣 <?= e($returnReceipt['points_restored']) ?> 积分 · 扣回赠送 <?= e($returnReceipt['points_reversed']) ?> 积分</p>
                 <?php endif; ?>
-                <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code></p>
-                <?php if ($returnReceipt['status'] === 'refund_pending' && sandboxRefundSecret() !== null): ?>
-                    <p>沙箱退款意图 <code class="return-token"><?= e($returnReceipt['refund_token']) ?></code></p>
+                <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code>
+                    · <?= e($returnReceipt['payment_provider']) ?></p>
+                <?php if ($returnReceipt['status'] === 'refund_pending'): ?>
+                    <p>退款意图 <code class="return-token"><?= e($returnReceipt['refund_token']) ?></code></p>
+                    <?php if ((int) $returnReceipt['amount'] === 0):
+                        form('confirm_zero_return'); echo field('refund', $returnReceipt['id']); ?>
+                        <button class="secondary">确认零现金退货</button></form>
+                    <?php endif; ?>
                 <?php elseif ($returnReceipt['refund_reference']): ?>
                     <p>退款流水 <?= e($returnReceipt['refund_reference']) ?></p>
                 <?php endif; ?>

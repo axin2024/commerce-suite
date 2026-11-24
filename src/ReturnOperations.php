@@ -216,7 +216,7 @@ trait ReturnOperations
     public static function validReturnReceipt(string $token, string $reference, string $payment, string $currency, int $amount): bool
     {
         return self::validSandboxFields($token, $reference, $currency, max(1, $amount))
-            && $amount >= 0 && preg_match('/^[a-z0-9_-]{1,80}$/iD', $payment) === 1;
+            && $amount >= 0 && self::validPaymentReference($payment);
     }
 
     public function recordReturnReceipt(string $token, string $reference, string $payment, string $currency, int $amount): array
@@ -224,24 +224,54 @@ trait ReturnOperations
         if (!demoEnabled() || !self::validReturnReceipt($token, $reference, $payment, $currency, $amount)) {
             throw new RuleViolation('退款回执无效或沙箱未启用。');
         }
+        return $this->confirmReturnReceipt('sandbox', $token, $reference, $payment, $currency, $amount, null);
+    }
+
+    public function confirmZeroCashReturn(int $finance, int $id): array
+    {
+        $this->actor($finance, 'finance');
+        $refund = $this->one("SELECT r.refund_token,r.amount,p.reference FROM refunds r JOIN order_items i ON i.id=r.item_id
+            JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN payments p ON p.order_id=m.order_id
+            WHERE r.id=? AND r.status IN ('refund_pending','refunded')", [$id]);
+        if (!isset($refund['amount'], $refund['refund_token']) || (int) $refund['amount'] !== 0) {
+            throw new RuleViolation('仅可确认现金退款为零的已验收退货。');
+        }
+        return $this->confirmReturnReceipt('internal', $refund['refund_token'], 'zero-return-' . $id,
+            $refund['reference'], 'CNY', 0, null, $finance);
+    }
+
+    private function confirmReturnReceipt(
+        string $provider, string $token, string $reference, string $payment, string $currency, int $amount, ?string $digest,
+        ?int $actor = null,
+    ): array {
         try {
-            return $this->transaction(function () use ($token, $reference, $payment, $currency, $amount): array {
-                $identity = $this->one('SELECT r.id,m.shop_id,m.order_id,p.reference FROM refunds r JOIN order_items i ON i.id=r.item_id
+            return $this->transaction(function () use ($provider, $token, $reference, $payment, $currency, $amount, $digest, $actor): array {
+                if ($digest !== null) {
+                    $this->rememberExternalRefund($provider, $reference, $digest);
+                }
+                $identity = $this->one('SELECT r.id,m.shop_id,m.order_id,p.reference,p.provider
+                    FROM refunds r JOIN order_items i ON i.id=r.item_id
                     JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN payments p ON p.order_id=m.order_id
                     WHERE r.refund_token=?', [$token]);
-                if (!$identity || $identity['reference'] !== $payment || $currency !== 'CNY') {
+                $matchesProvider = match ($provider) {
+                    'sandbox' => in_array($identity['provider'] ?? null, ['sandbox', 'demo', 'promotion'], true),
+                    'internal' => $amount === 0,
+                    default => ($identity['provider'] ?? null) === $provider,
+                };
+                if (!$identity || $identity['reference'] !== $payment || $currency !== 'CNY' || !$matchesProvider) {
                     throw new RuleViolation('未找到匹配的原支付流水。');
                 }
                 $id = (int) $identity['id'];
                 $order = (int) $identity['order_id'];
                 $refund = $this->lockReturn($id, (int) $identity['shop_id'], $order);
                 if ((int) $refund['amount'] !== $amount || ($refund['status'] !== 'refund_pending'
-                    && ($refund['status'] !== 'refunded' || $refund['refund_reference'] !== $reference))) {
+                    && ($refund['status'] !== 'refunded' || $refund['refund_reference'] !== $reference
+                        || $refund['refund_provider'] !== $provider))) {
                     throw new RuleViolation('退款回执与申请金额或流水不符。');
                 }
                 if ($refund['status'] === 'refund_pending') {
-                    $this->query("UPDATE refunds SET status='refunded',refund_reference=?,confirmed_at=UTC_TIMESTAMP() WHERE id=?",
-                        [$reference, $id]);
+                    $this->query("UPDATE refunds SET status='refunded',refund_reference=?,refund_provider=?,confirmed_at=UTC_TIMESTAMP()
+                        WHERE id=?", [$reference, $provider, $id]);
                     $this->query('UPDATE order_items SET refunded_quantity=refunded_quantity+? WHERE id=?',
                         [$refund['accepted_quantity'], $refund['item_id']]);
                     $credit = $refund['freight_payer'] === 'platform' ? (int) $refund['freight_amount'] : 0;
@@ -251,7 +281,7 @@ trait ReturnOperations
                         $credit, -(int) $refund['points_spent'],
                     ]);
                     $this->settleRefundPoints($order, $refund);
-                    $this->audit(null, 'refund.confirmed', $id, ['reference' => $reference, 'amount' => $amount]);
+                    $this->audit($actor, 'refund.confirmed', $id, ['reference' => $reference, 'amount' => $amount, 'provider' => $provider]);
                     $this->restoreRefundedCoupon($order, $id);
                 }
                 return ['refund_id' => $id, 'status' => 'refunded'];

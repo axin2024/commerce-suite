@@ -15,6 +15,8 @@ require_once __DIR__ . '/ChannelBillOperations.php';
 require_once __DIR__ . '/MerchantOrderHistory.php';
 require_once __DIR__ . '/FreightStrategies.php';
 require_once __DIR__ . '/FreightPolicyOperations.php';
+require_once __DIR__ . '/PaymentChannels.php';
+require_once __DIR__ . '/PaymentChannelOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -32,6 +34,7 @@ final class Commerce
     use ChannelBillOperations;
     use MerchantOrderHistory;
     use FreightPolicyOperations;
+    use PaymentChannelOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -43,10 +46,13 @@ final class Commerce
     ];
 
     private readonly FreightStrategies $freightStrategies;
+    private readonly PaymentChannels $paymentChannels;
 
-    public function __construct(private readonly PDO $db, ?FreightStrategies $freightStrategies = null)
+    public function __construct(private readonly PDO $db, ?FreightStrategies $freightStrategies = null,
+        ?PaymentChannels $paymentChannels = null)
     {
         $this->freightStrategies = $freightStrategies ?? FreightStrategies::fromEnvironment();
+        $this->paymentChannels = $paymentChannels ?? PaymentChannels::fromEnvironment();
     }
 
     public function rows(string $sql, array $params = []): array
@@ -672,13 +678,17 @@ final class Commerce
             if ($snapshot != $current) {
                 throw new RuleViolation('商品、价格、运费、积分规则或分仓结果已变化，请重新报价。');
             }
+            if ($current['total'] > 0 && $this->paymentChannels->checkoutProvider === null && !demoEnabled()) {
+                throw new RuleViolation('结账暂未配置支付渠道，请联系平台。');
+            }
             $loyalty = $current['loyalty'] ?? null;
             $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
-                promotion_revision_id,loyalty_revision_id,points_spent,points_earned,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
+                promotion_revision_id,loyalty_revision_id,points_spent,points_earned,payment_provider,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
                 $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
                 $current['total'], $current['destination'], bin2hex(random_bytes(16)), $current['promotion']['revision_id'] ?? null,
                 $loyalty['revision_id'] ?? null, $loyalty['spent'] ?? 0, $loyalty['earned'] ?? 0,
+                $current['total'] > 0 ? $this->paymentChannels->checkoutProvider : null,
             ]);
             if ($current['coupon'] !== null) {
                 $this->query('UPDATE coupon_claims SET order_id=? WHERE buyer_id=? AND promotion_id=?',
@@ -736,7 +746,7 @@ final class Commerce
         return $this->transaction(function () use ($buyer, $orderId, $reference, $amount): int {
             $order = $this->one('SELECT *, expires_at <= UTC_TIMESTAMP() AS expired
                 FROM orders WHERE id=? AND buyer_id=? FOR UPDATE', [$orderId, $buyer]);
-            if (!$order || (int) $order['total'] !== $amount) {
+            if (!$order || $order['payment_provider'] !== null || (int) $order['total'] !== $amount) {
                 throw new RuleViolation('订单或支付金额无效。');
             }
             $paid = $this->one('SELECT id,reference,provider FROM payments WHERE order_id=?', [$orderId]);
@@ -776,7 +786,17 @@ final class Commerce
     public static function validSandboxFields(string $token, string $reference, string $currency, int $amount): bool
     {
         return preg_match('/^[a-f0-9]{32}$/D', $token) === 1
-            && preg_match('/^[a-z0-9_-]{1,80}$/iD', $reference) === 1
+            && self::validCaptureDetails($reference, $currency, $amount);
+    }
+
+    private static function validPaymentReference(string $reference): bool
+    {
+        return preg_match('/^[a-z0-9_-]{1,80}$/iD', $reference) === 1;
+    }
+
+    private static function validCaptureDetails(string $reference, string $currency, int $amount): bool
+    {
+        return self::validPaymentReference($reference)
             && preg_match('/^[A-Z]{3}$/D', $currency) === 1
             && $amount >= 1 && $amount <= 1_000_000_000_000;
     }
@@ -787,10 +807,15 @@ final class Commerce
             || !preg_match('/^[a-f0-9]{64}$/D', $digest)) {
             throw new RuleViolation('支付回执格式无效或沙箱未启用。');
         }
-        return $this->transaction(function () use ($token, $reference, $currency, $amount, $digest): array {
-            $this->query('INSERT INTO payment_receipts (reference,payment_token,currency,amount,payload_sha256)
-                VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id', [$reference, $token, $currency, $amount, $digest]);
-            $receipt = $this->one('SELECT * FROM payment_receipts WHERE reference=? FOR UPDATE', [$reference]);
+        return $this->recordCapture('sandbox', $token, $reference, $currency, $amount, $digest);
+    }
+
+    private function recordCapture(string $provider, string $token, string $reference, string $currency, int $amount, string $digest): array
+    {
+        return $this->transaction(function () use ($provider, $token, $reference, $currency, $amount, $digest): array {
+            $this->query('INSERT INTO payment_receipts (provider,reference,payment_token,currency,amount,payload_sha256)
+                VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id', [$provider, $reference, $token, $currency, $amount, $digest]);
+            $receipt = $this->one('SELECT * FROM payment_receipts WHERE provider=? AND reference=? FOR UPDATE', [$provider, $reference]);
             if (!hash_equals($receipt['payload_sha256'], $digest) || $receipt['payment_token'] !== $token
                 || $receipt['currency'] !== $currency || (int) $receipt['amount'] !== $amount) {
                 throw new RuleViolation('该渠道流水对应的回执内容已存在。');
@@ -800,7 +825,7 @@ final class Commerce
                 return $this->receiptResult($id, $receipt);
             }
 
-            $order = $this->one('SELECT id,status,total,expires_at<=UTC_TIMESTAMP() AS expired
+            $order = $this->one('SELECT id,status,total,payment_provider,expires_at<=UTC_TIMESTAMP() AS expired
                 FROM orders WHERE payment_token=? FOR UPDATE', [$token]);
             $orderId = $order ? (int) $order['id'] : null;
             $payment = null;
@@ -809,6 +834,10 @@ final class Commerce
                 case !$order:
                     $status = 'needs_review';
                     $reason = 'unknown_intent';
+                    break;
+                case $order['payment_provider'] !== ($provider === 'sandbox' ? null : $provider):
+                    $status = 'needs_review';
+                    $reason = 'channel_mismatch';
                     break;
                 case $currency !== 'CNY' || (int) $order['total'] !== $amount:
                     $status = 'needs_review';
@@ -827,13 +856,14 @@ final class Commerce
                     break;
                 default:
                     $status = 'accepted';
-                    $payment = $this->confirmPayment($orderId, $reference, $amount, 'sandbox', null);
+                    $payment = $this->confirmPayment($orderId, $reference, $amount, $provider, null);
                     break;
             }
             $this->query('UPDATE payment_receipts SET status=?,failure_code=?,order_id=?,payment_id=? WHERE id=?',
                 [$status, $reason, $orderId, $payment, $id]);
             if ($reason !== null) {
-                $this->audit(null, 'payment.receipt_exception', $id, ['reason' => $reason, 'order_id' => $orderId]);
+                $this->audit(null, 'payment.receipt_exception', $id,
+                    ['reason' => $reason, 'order_id' => $orderId, 'provider' => $provider]);
             }
             return $this->receiptResult($id, ['status' => $status, 'payment_id' => $payment]);
         });
@@ -853,7 +883,7 @@ final class Commerce
         }
         try {
             $this->transaction(function () use ($finance, $receipt, $refundReference): void {
-                $row = $this->one('SELECT status,refund_reference FROM payment_receipts WHERE id=? FOR UPDATE', [$receipt]);
+                $row = $this->one("SELECT status,refund_reference FROM payment_receipts WHERE id=? AND provider='sandbox' FOR UPDATE", [$receipt]);
                 if ($row && $row['status'] === 'refunded' && $row['refund_reference'] === $refundReference) {
                     return;
                 }

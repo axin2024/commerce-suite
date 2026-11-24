@@ -16,6 +16,7 @@ Compose 默认运行 MySQL 8.4 LTS。迁移服务在数据库可连接后执行�
 | `COMMERCE_SECURE_COOKIES` | 在 HTTPS 反向代理部署时设为 1，让浏览器只在 HTTPS 下发送会话 Cookie |
 | `COMMERCE_WORK_INTERVAL_SECONDS` | 后台任务每轮结束后的等待时间，默认 60，允许 1 至 3600 秒 |
 | `COMMERCE_FREIGHT_EXTENSION` | 可选，应用进程能读取的 PHP 计费文件绝对路径，详见[运费扩展](freight.md) |
+| `COMMERCE_PAYMENT_EXTENSION`、`COMMERCE_CHECKOUT_CHANNEL` | 加载并选用支付渠道。关闭演示模式后，正金额订单需要配置收银渠道，详见[支付渠道接入](payment-channels.md) |
 | `COMMERCE_OPERATOR_PASSWORD` | 创建运营账号的临时密码，在执行账号创建命令时单独传入 |
 
 Compose 初始化变量只对空数据卷生效。已有库需要在 MySQL 中更新账号密码，并同时更新应用配置。对外部署应保持 `APP_DEMO=0`，只暴露 HTTPS 代理端口。登录和注册的限流由入口代理配置。PHP 内置服务器适用于本机演示与验收，正式环境请使用 PHP-FPM 和反向代理。
@@ -32,7 +33,7 @@ docker compose exec -e COMMERCE_OPERATOR_PASSWORD app php bin/commerce.php opera
 
 ## 健康检查与后台任务
 
-- `GET /health.php` 就绪时返回 HTTP 200 和 `{"status":"ready"}`。数据库不可用、迁移版本不符或计费扩展配置无法加载时返回 HTTP 503 和 `{"status":"unavailable"}`。支持 `HEAD`。
+- `GET /health.php` 就绪时返回 HTTP 200 和 `{"status":"ready"}`。数据库不可用、迁移版本不符或运费与支付扩展配置无法加载时返回 HTTP 503 和 `{"status":"unavailable"}`。支持 `HEAD`。
 - `php bin/commerce.php health` 在原生终端验证同样的数据库条件。Compose 下可执行 `docker compose exec app php bin/commerce.php health`。
 - `php bin/worker.php` 每轮连接数据库并检查迁移状态，依次执行过期订单释放和渠道账单对账。单项失败会记日志，剩余任务仍会运行，下一轮重新连库。
 - `php bin/worker.php --once` 运行一轮，适合系统定时任务。任一任务失败时返回非零状态。需要排查积压时，可查看 `docker compose logs worker`、待付款订单的过期时间和渠道账单的待核对状态。

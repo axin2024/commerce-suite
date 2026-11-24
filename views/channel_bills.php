@@ -56,7 +56,9 @@ try {
                     <td><?= e($row['line_no']) ?></td>
                     <td><?= e($kinds[$row['kind']] ?? '—') ?></td>
                     <td><?= e($row['order_id'] ?? '—') ?></td>
-                    <td><?= e($row['reference'] ?? '—') ?></td>
+                    <td><?= e($row['reference'] ?? '—') ?><?php if ($row['reference'] !== null): ?>
+                        <small><?= e($row['provider']) ?></small>
+                    <?php endif; ?></td>
                     <td><?= e($row['currency'] ?? '—') ?></td>
                     <td><?= e($row['amount'] ?? '—') ?></td>
                     <td>

@@ -22,7 +22,7 @@ trait ChannelBillOperations
             $id = $this->insert('INSERT INTO channel_bill_imports (uploaded_by,shop_id,file_sha256,row_count) VALUES (?,?,?,?)',
                 [$actor, $shop, $digest, count($rows)]);
             $save = $this->db->prepare('INSERT INTO channel_bill_rows
-                (import_id,line_no,kind,order_id,reference,currency,amount,status,result_code) VALUES (?,?,?,?,?,?,?,?,?)');
+                (import_id,line_no,kind,order_id,reference,currency,amount,provider,status,result_code) VALUES (?,?,?,?,?,?,?,?,?,?)');
             foreach ($rows as $number => $row) {
                 $save->execute([$id, $number, ...$row]);
             }
@@ -80,7 +80,7 @@ trait ChannelBillOperations
     public function channelBillDetails(int $actor, int $import): array
     {
         $bill = $this->channelBillImport($actor, $import);
-        $rows = $this->rows('SELECT line_no,kind,order_id,reference,currency,amount,status,result_code,local_id,checked_at
+        $rows = $this->rows('SELECT line_no,kind,order_id,reference,currency,amount,provider,status,result_code,local_id,checked_at
             FROM channel_bill_rows WHERE import_id=? ORDER BY line_no', [$import]);
         if ($bill['shop_id'] !== null && $this->actor($actor, 'finance', 'merchant')['role'] === 'merchant') {
             foreach ($rows as &$row) {
@@ -122,7 +122,9 @@ trait ChannelBillOperations
         $data = str_replace(["\r\n", "\r"], "\n", $data);
         // All bill fields are single-line identifiers or integers. Parse independently to keep later rows after a bad quote.
         $lines = explode("\n", str_ends_with($data, "\n") ? substr($data, 0, -1) : $data, 1002);
-        if (self::channelBillColumns(array_shift($lines)) !== self::CHANNEL_BILL_HEADER) {
+        $header = self::channelBillColumns(array_shift($lines));
+        $withProvider = $header === [...self::CHANNEL_BILL_HEADER, 'provider'];
+        if (!$withProvider && $header !== self::CHANNEL_BILL_HEADER) {
             throw new RuleViolation('CSV 表头与账单模板不一致。');
         }
         if (!$lines || count($lines) > 1000) {
@@ -132,13 +134,13 @@ trait ChannelBillOperations
         $references = [];
         foreach ($lines as $index => $line) {
             $number = $index + 2;
-            $parsed = self::channelBillFields(self::channelBillColumns($line));
+            $parsed = self::channelBillFields(self::channelBillColumns($line), $withProvider);
             if ($parsed === null) {
-                $rows[$number] = [null, null, null, null, null, 'invalid', 'invalid_fields'];
+                $rows[$number] = [null, null, null, null, null, 'sandbox', 'invalid', 'invalid_fields'];
                 continue;
             }
             $rows[$number] = [...$parsed, 'queued', null];
-            $references[$parsed[0] . ':' . $parsed[2]][] = $number;
+            $references[$parsed[5] . ':' . $parsed[0] . ':' . $parsed[2]][] = $number;
         }
         foreach ($references as $numbers) {
             $first = $numbers[0];
@@ -152,8 +154,8 @@ trait ChannelBillOperations
             }
             foreach ($numbers as $number) {
                 if ($conflict || $number !== $first) {
-                    $rows[$number][5] = $conflict ? 'conflict' : 'duplicate';
-                    $rows[$number][6] = 'repeated_reference';
+                    $rows[$number][6] = $conflict ? 'conflict' : 'duplicate';
+                    $rows[$number][7] = 'repeated_reference';
                 }
             }
         }
@@ -163,16 +165,17 @@ trait ChannelBillOperations
     private static function channelBillColumns(string $line): array
     {
         return array_map(static fn(string $value): string => strlen($value) >= 2 && $value[0] === '"' && str_ends_with($value, '"')
-            ? substr($value, 1, -1) : $value, explode(',', $line, 6));
+            ? substr($value, 1, -1) : $value, explode(',', $line, 7));
     }
 
-    private static function channelBillFields(array $fields): ?array
+    private static function channelBillFields(array $fields, bool $withProvider): ?array
     {
-        if (count($fields) !== 5) {
+        if (count($fields) !== ($withProvider ? 6 : 5)) {
             return null;
         }
         [$kind, $order, $reference, $currency, $amount] = $fields;
-        if (!is_string($kind) || !in_array($kind, ['capture', 'return_refund', 'exception_refund'], true)
+        $provider = $fields[5] ?? 'sandbox';
+        if (!PaymentChannels::validProvider($provider) || !in_array($kind, ['capture', 'return_refund', 'exception_refund'], true)
             || !preg_match('/^[1-9][0-9]{0,18}$/D', (string) $order)
             || !preg_match('/^[a-z0-9_-]{1,80}$/iD', (string) $reference)
             || !preg_match('/^[A-Z]{3}$/D', (string) $currency)
@@ -184,7 +187,7 @@ trait ChannelBillOperations
         if ($order === false || $amount > 1_000_000_000_000 || ($kind !== 'return_refund' && $amount === 0)) {
             return null;
         }
-        return [$kind, $order, $reference, $currency, $amount];
+        return [$kind, $order, $reference, $currency, $amount, $provider];
     }
 
     private function matchChannelBill(array $row, ?int $shop): array
@@ -192,14 +195,14 @@ trait ChannelBillOperations
         if ($shop !== null && !$this->one('SELECT id FROM merchant_orders WHERE order_id=? AND shop_id=?', [$row['order_id'], $shop])) {
             return ['outside_shop', 'merchant_order_missing', null];
         }
-        $reference = [$row['reference']];
+        $reference = [$row['provider'], $row['reference']];
         $receipt = match ($row['kind']) {
-            'capture' => $this->one('SELECT id,order_id,amount,currency,status FROM payment_receipts WHERE reference=?', $reference),
+            'capture' => $this->one('SELECT id,order_id,amount,currency,status FROM payment_receipts WHERE provider=? AND reference=?', $reference),
             'exception_refund' => $this->one("SELECT id,order_id,amount,currency,status FROM payment_receipts
-                WHERE refund_reference=? AND status='refunded'", $reference),
+                WHERE provider=? AND refund_reference=? AND status='refunded'", $reference),
             'return_refund' => $this->one("SELECT r.id,m.order_id,m.shop_id,r.amount,'CNY' AS currency,r.status
                 FROM refunds r JOIN order_items i ON i.id=r.item_id JOIN merchant_orders m ON m.id=i.merchant_order_id
-                WHERE r.refund_reference=? AND r.status='refunded'", $reference),
+                WHERE r.refund_provider=? AND r.refund_reference=? AND r.status='refunded'", $reference),
         };
         if (!$receipt || ($shop !== null && isset($receipt['shop_id']) && (int) $receipt['shop_id'] !== $shop)) {
             return ['awaiting_receipt', 'reference_not_found', null];

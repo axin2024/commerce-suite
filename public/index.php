@@ -229,6 +229,10 @@ try {
                     $order = number('order');
                     $app->demoPay($id, $order, 'demo-order-' . $order, number('amount'));
                     break;
+                case 'channel_pay':
+                    $order = number('order');
+                    $_SESSION['checkout_link'] = ['order' => $order, 'url' => $app->paymentCheckoutUrl($id, $order)];
+                    redirect('orders');
                 case 'cancel':
                     if (!$app->cancel(number('order'), $id)) {
                         throw new RuleViolation('订单当前不可取消。');
@@ -411,6 +415,11 @@ try {
                     redirect('settlements', ['batch' => $batch]);
                 case 'sandbox_refund':
                     $app->recordSandboxRefund($id, number('receipt'), input('reference'));
+                    break;
+                case 'confirm_zero_return':
+                    $refund = number('refund');
+                    $nextParams = ['return_receipt' => $refund];
+                    $app->confirmZeroCashReturn($id, $refund);
                     break;
                 case 'bill_import':
                     $next = 'channel_bills';

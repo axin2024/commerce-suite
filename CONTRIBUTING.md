@@ -20,6 +20,6 @@ python3 tests/web_smoke.py http://127.0.0.1:8080
 
 提交合并请求时说明业务问题、影响角色、升级方式和本地执行结果。涉及金额、租户归属或重复提交时，请写明测试所断言的订单金额、状态或分录。
 
-[运费规则](docs/freight.md)包含可安装的扩展示例。扩展改动应提供一组成功输入和一组拒绝输入，并说明策略版本、权限、重复调用、取消与失败行为。渠道对接可从[沙箱回执契约](docs/architecture.md#沙箱支付回执)切入，营销改动可从 [PromotionOperations](src/PromotionOperations.php) 与结账时的金额分摊用例切入。
+[运费规则](docs/freight.md)与[支付渠道](docs/payment-channels.md)包含可运行的扩展示例。扩展改动应提供一组成功输入和一组拒绝输入，并说明策略版本、权限、重复调用、取消与失败行为。营销改动可从 [PromotionOperations](src/PromotionOperations.php) 与结账时的金额分摊用例切入。
 
 发行前的验证与镜像核对见[发行手册](docs/releasing.md)。

@@ -1,6 +1,7 @@
 <?php
 $newPickupCode = $_SESSION['pickup_code'] ?? null;
-unset($_SESSION['pickup_code']);
+$checkoutLink = $_SESSION['checkout_link'] ?? null;
+unset($_SESSION['pickup_code'], $_SESSION['checkout_link']);
 $orders = $app->rows('SELECT o.*,r.name AS promotion_name,c.restored_at AS coupon_restored_at FROM orders o
     LEFT JOIN promotion_revisions r ON r.id=o.promotion_revision_id LEFT JOIN coupon_refund_restorations c ON c.order_id=o.id
     WHERE o.buyer_id=? ORDER BY o.id DESC LIMIT 50', [$id]);
@@ -28,12 +29,18 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                 · <?= $order['status'] === 'paid' ? '支付获赠' : '支付后预计赠' ?> <?= e($order['points_earned']) ?> 积分
                 · 规则 #<?= e($order['loyalty_revision_id']) ?> <a href="/?page=account#points">查看积分明细</a></p>
         <?php endif; ?>
-        <?php if (sandboxWebhookSecret() !== null): ?>
+        <?php if ($order['payment_provider'] === null && sandboxWebhookSecret() !== null): ?>
             <p class="muted">沙箱支付意图 <code><?= e($order['payment_token']) ?></code></p>
         <?php endif; ?>
         <?php if ($order['status'] === 'unpaid'): ?>
             <div class="inline">
-                <?php if (demoEnabled()): form('pay'); echo field('order', $order['id']), field('amount', $order['total']); ?>
+                <?php if ($order['payment_provider'] !== null): ?>
+                    <?php if (($checkoutLink['order'] ?? null) === (int) $order['id']): ?>
+                        <a href="<?= e($checkoutLink['url']) ?>" rel="noreferrer">前往支付渠道</a>
+                    <?php else: form('channel_pay'); echo field('order', $order['id']); ?>
+                        <button>获取支付链接</button></form>
+                    <?php endif; ?>
+                <?php elseif (demoEnabled()): form('pay'); echo field('order', $order['id']), field('amount', $order['total']); ?>
                     <button>模拟支付</button></form>
                 <?php endif; ?>
                 <?php form('cancel'); echo field('order', $order['id']); ?>

@@ -1101,7 +1101,13 @@ $coveredOrder = $app->place($loyalCustomer, $coveredQuote['token']);
 same(['balance' => 0, 'held' => 0, 'available' => 0], $accountPoints(), 'auto-paid order consumes reserved points atomically');
 [$zeroPaidReturn] = $prepareCouponReturns($coveredOrder, $loyalCustomer);
 same(0, $zeroPaidReturn[3], 'fully points-funded item has zero cash refund');
-$confirmCouponReturn($zeroPaidReturn);
+$zeroReturnId = (int) $app->rows('SELECT id FROM refunds WHERE refund_token=?', [$zeroPaidReturn[0]])[0]['id'];
+denied(fn() => $app->confirmZeroCashReturn($loyalCustomer, $zeroReturnId), 'zero return confirmation requires finance');
+$newZeroReceipt = $app->confirmZeroCashReturn($finance, $zeroReturnId);
+same(['refund_id' => $zeroReturnId, 'status' => 'refunded'], $newZeroReceipt, 'finance confirms a zero-cash return internally');
+same($newZeroReceipt, $app->confirmZeroCashReturn($finance, $zeroReturnId), 'internal zero return confirmation replays once');
+same('internal', $app->rows('SELECT refund_provider FROM refunds WHERE id=?', [$zeroReturnId])[0]['refund_provider'],
+    'zero return is never attributed to an external refund');
 same(['balance' => 0, 'held' => 0, 'available' => 0], $accountPoints(), 'policy in use may retain points redemption');
 foreach ($prepareCouponReturns($earnOrder, $loyalCustomer) as $earnReturn) {
     $confirmCouponReturn($earnReturn);
@@ -1168,7 +1174,31 @@ same([700, 800], [$couponFreight['shops'][$northShop]['shipping'], $couponFreigh
 same([$freightSix, $freightFive, $freightFour, $freightThree, $freightTwo, $freightOne],
     array_map('intval', array_column($app->merchantFreightHistory($north), 'id')), 'history maintains every published revision');
 
+$testChannel = ['checkout' => static fn(array $details): string => 'https://checkout.example.test/pay?' . http_build_query($details),
+    'verify' => static fn(string $body, array $headers): array => json_decode($body, true, 4, JSON_THROW_ON_ERROR)];
+$definitions = ['channel-a' => $testChannel, 'channel-b' => $testChannel];
+$channelA = new Commerce($db, paymentChannels: new PaymentChannels($definitions, 'channel-a'));
+$channelB = new Commerce($db, paymentChannels: new PaymentChannels($definitions, 'channel-b'));
+$routeQuote = $splitFreight($app, 1);
+$channelOrder = $channelA->place($buyer, $routeQuote['token']);
+same($channelOrder, $channelB->place($buyer, $routeQuote['token']), 'replayed placement keeps the original channel binding');
+denied(fn() => $channelA->demoPay($buyer, $channelOrder, "external-$tag", $routeQuote['total']),
+    'demo payment cannot accept an externally bound order');
+$event = ['type' => 'capture', 'token' => $intent($channelOrder), 'reference' => "external-$tag",
+    'currency' => 'CNY', 'amount' => $routeQuote['total']];
+$captureChannel = static fn(string $provider, array $payload): array =>
+    $channelB->receivePaymentChannelEvent($provider, json_encode($payload, JSON_THROW_ON_ERROR), []);
+same('needs_review', $captureChannel('channel-b', $event)['status'], 'a different registered channel cannot confirm the order');
+same('needs_review', $receipt($event['token'], $event['reference'], $event['amount'])['status'],
+    'sandbox captures for an externally bound order only create a review receipt');
+$paidChannel = $captureChannel('channel-a', $event);
+same('accepted', $paidChannel['status'], 'the original channel accepts its own capture after checkout configuration changes');
+same($paidChannel, $captureChannel('channel-a', array_reverse($event, true)), 'canonical replay depends on normalized fields');
+same(['channel-a', 'channel-b', 'sandbox'], array_column($app->rows('SELECT provider FROM payment_receipts
+    WHERE reference=? ORDER BY provider', [$event['reference']]), 'provider'), 'each channel can use the same receipt reference');
+
 putenv('APP_DEMO=0');
+denied(fn() => $app->place($buyer, $splitFreight($app, 1)['token']), 'external checkout requires a channel before reserving stock');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
 denied(fn() => $receipt($intent($resaleOrder), "disabled-$tag", 200), 'webhook processing requires sandbox opt-in');
 denied(fn() => $returnReceipt("return-paid-$tag", 10800), 'return webhook processing also requires sandbox opt-in');
