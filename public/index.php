@@ -85,6 +85,7 @@ function badge(string $status): string
         'draft' => '草稿', 'archived' => '已归档', 'unpaid' => '待付款',
         'paid' => '已付款', 'ready' => '待履约', 'fulfilled' => '已履约', 'partial' => '部分发货',
         'shipped' => '待签收',
+        'pickup_pending' => '待备货', 'pickup_prepared' => '待提货',
         'cancelled' => '已取消', 'approved' => '已审批',
     ];
     return '<span class="badge ' . e($status) . '">' . e($labels[$status] ?? $status) . '</span>';
@@ -165,7 +166,26 @@ try {
                     $next = 'cart';
                     unset($_SESSION['quote']);
                     $coupon = input('coupon') === '' ? null : number('coupon');
-                    $_SESSION['quote'] = $app->quoteCart($id, input('channel'), input('destination'), $coupon);
+                    $channel = input('channel');
+                    $locations = [];
+                    if ($channel === 'store') {
+                        $submitted = $_POST['pickup_locations'] ?? [];
+                        if (!is_array($submitted) || count($submitted) > 30) {
+                            throw new RuleViolation('自提门店选择无效。');
+                        }
+                        foreach ($submitted as $shop => $choice) {
+                            if ($choice === '') {
+                                continue;
+                            }
+                            $location = is_string($choice) ? filter_var($choice, FILTER_VALIDATE_INT,
+                                ['options' => ['min_range' => 1]]) : false;
+                            if (!is_int($shop) || $shop < 1 || $location === false) {
+                                throw new RuleViolation('自提门店选择无效。');
+                            }
+                            $locations[$shop] = $location;
+                        }
+                    }
+                    $_SESSION['quote'] = $app->quoteCart($id, $channel, input('destination'), $coupon, $locations);
                     break;
                 case 'place':
                     $next = 'cart';
@@ -211,7 +231,8 @@ try {
                     $app->createPlatformShop($id, input('email'), input('password'), input('shop'), input('payee'));
                     break;
                 case 'shop_member':
-                    $app->addShopMember($id, input('email'), input('password'), input('position'));
+                    $location = input('pickup_location') === '' ? null : number('pickup_location');
+                    $app->addShopMember($id, input('email'), input('password'), input('position'), $location);
                     break;
                 case 'shop_member_access':
                     $enabled = input('enabled');
@@ -232,6 +253,10 @@ try {
                     break;
                 case 'warehouse_create':
                     $app->createWarehouse($id, input('code'), input('name'), input('address'));
+                    break;
+                case 'pickup_location_save':
+                    $app->savePickupLocation($id, number('pickup_location', 0), number('warehouse', 0),
+                        input('code'), input('name'), input('address'), input('enabled') === '1');
                     break;
                 case 'sku_unlist':
                     $app->unlistSku($id, number('product'));
@@ -261,8 +286,17 @@ try {
                     }
                     $app->reviewSku($id, number('release'), $decision === 'approve', input('reason'));
                     break;
-                case 'fulfill':
-                    $app->fulfill($id, number('merchant_order'), input('tracking'));
+                case 'pickup_prepare':
+                    $app->preparePickup($id, number('merchant_order'), number('pickup_location'));
+                    break;
+                case 'pickup_issue':
+                    $order = number('merchant_order');
+                    $_SESSION['pickup_code'] = ['order' => $order, 'code' => $app->issuePickupCode($id, $order)];
+                    redirect('orders');
+                case 'pickup_redeem':
+                    $_SESSION['notice'] = $app->redeemPickup($id, number('merchant_order'), number('pickup_location'),
+                        input('code')) ? '已完成提货核销。' : '该提货码已核销。';
+                    redirect('merchant');
                     break;
                 case 'shipment_dispatch':
                     $submitted = $_POST['quantities'] ?? null;

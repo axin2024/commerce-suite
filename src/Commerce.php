@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
 require_once __DIR__ . '/InventoryOperations.php';
+require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
 
@@ -13,6 +14,7 @@ final class Commerce
 {
     use CatalogOperations;
     use InventoryOperations;
+    use PickupOperations;
     use PromotionOperations;
     use ShippingOperations;
 
@@ -20,6 +22,7 @@ final class Commerce
     public const STAFF_POSITIONS = [
         'catalog' => '商品运营',
         'fulfillment' => '订单履约',
+        'pickup' => '门店核销',
         'support' => '售后客服',
         'finance' => '店铺财务',
     ];
@@ -104,7 +107,7 @@ final class Commerce
 
     private function shopActor(int $id, string $position): array
     {
-        $actor = $this->one("SELECT u.id,m.shop_id,m.position,m.enabled FROM users u
+        $actor = $this->one("SELECT u.id,m.shop_id,m.position,m.enabled,m.pickup_location_id FROM users u
             JOIN shop_members m ON m.user_id=u.id AND m.shop_id=u.shop_id
             WHERE u.id=? AND u.role='merchant'" . ($this->db->inTransaction() ? ' FOR SHARE' : ''), [$id]);
         if (!$actor || !self::canManage($actor, $position)) {
@@ -241,21 +244,29 @@ final class Commerce
         });
     }
 
-    public function addShopMember(int $owner, string $email, string $password, string $position): int
+    public function addShopMember(int $owner, string $email, string $password, string $position, ?int $pickupLocation = null): int
     {
         $email = self::validateAccount($email, $password);
         if (!isset(self::STAFF_POSITIONS[$position])) {
             throw new RuleViolation('请选择有效的店铺岗位。');
         }
+        if (($position === 'pickup') !== ($pickupLocation !== null)) {
+            throw new RuleViolation('门店核销岗位需要绑定一个自提门店。');
+        }
         $passwordHash = password_hash($password, PASSWORD_DEFAULT);
         try {
-            return $this->transaction(function () use ($owner, $email, $passwordHash, $position): int {
+            return $this->transaction(function () use ($owner, $email, $passwordHash, $position, $pickupLocation): int {
                 $actor = $this->shopActor($owner, 'owner');
+                if ($pickupLocation !== null && !$this->one('SELECT id FROM pickup_locations WHERE id=? AND shop_id=?',
+                    [$pickupLocation, $actor['shop_id']])) {
+                    throw new RuleViolation('请选择本店的自提门店。');
+                }
                 $id = $this->insert("INSERT INTO users (email,password_hash,role,shop_id) VALUES (?,?,'merchant',?)",
                     [$email, $passwordHash, $actor['shop_id']]);
-                $this->query('INSERT INTO shop_members (user_id,shop_id,position) VALUES (?,?,?)',
-                    [$id, $actor['shop_id'], $position]);
-                $this->audit($owner, 'shop.member_added', (int) $actor['shop_id'], ['user_id' => $id, 'position' => $position]);
+                $this->query('INSERT INTO shop_members (user_id,shop_id,position,pickup_location_id) VALUES (?,?,?,?)',
+                    [$id, $actor['shop_id'], $position, $pickupLocation]);
+                $this->audit($owner, 'shop.member_added', (int) $actor['shop_id'],
+                    ['user_id' => $id, 'position' => $position, 'pickup_location_id' => $pickupLocation]);
                 return $id;
             });
         } catch (PDOException $error) {
@@ -294,7 +305,7 @@ final class Commerce
     public function cartLines(int $buyer): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,
+        return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,p.shop_id,
             r.color,r.size,s.name AS shop_name,
             p.stock-p.reserved AS available,(p.status='active' AND s.status='active') AS on_sale
             FROM cart_lines c JOIN products p ON p.id=c.product_id JOIN shops s ON s.id=p.shop_id
@@ -394,12 +405,14 @@ final class Commerce
         return $parts;
     }
 
-    private function priceCart(int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock): array
-    {
-        $destination = trim($destination);
-        if (!in_array($channel, ['web', 'store'], true) || $destination === ''
-            || strlen($destination) > 250 || !$cart || count($cart) > 30) {
-            throw new RuleViolation('请选择履约方式并填写地址或提货点，购物车最多容纳 30 种 SKU。');
+    private function priceCart(
+        int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations,
+    ): array {
+        $pickup = $channel === 'store';
+        $destination = $pickup ? '门店自提' : trim($destination);
+        if (!in_array($channel, ['web', 'store'], true) || $destination === '' || strlen($destination) > 250
+            || !$cart || count($cart) > 30 || (!$pickup && $pickupLocations)) {
+            throw new RuleViolation('请选择履约方式，配送需填写地址，购物车最多容纳 30 种 SKU。');
         }
         $member = $this->one('SELECT member_level FROM users WHERE id=?' . ($lock ? ' FOR SHARE' : ''), [$buyer]);
         $hasMemberPrice = $member['member_level'] === 'plus';
@@ -426,8 +439,18 @@ final class Commerce
                 throw new RuleViolation('商品可用库存不足，请调整购买数量。');
             }
             $shopId = (int) $shop['id'];
+            if (!isset($shops[$shopId])) {
+                $shops[$shopId] = ['warehouses' => [], 'shipping' => 0, 'total' => 0];
+                if ($pickup) {
+                    $location = $pickupLocations[$shopId] ?? null;
+                    if (!is_int($location) || $location < 1) {
+                        throw new RuleViolation('请为购物车中的每家店铺选择自提门店。');
+                    }
+                    $shops[$shopId]['pickup'] = $this->pickupSelection($shopId, $location, $lock);
+                }
+            }
             $price = (int) $product['price'];
-            $allocation = $this->allocateWarehouses($id, $quantity, $channel, $lock);
+            $allocation = $this->allocateWarehouses($id, $quantity, $shops[$shopId]['pickup']['warehouse_id'] ?? null, $lock);
             $items[$id] = [
                 'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'], 'release_id' => (int) $product['release_id'],
                 'category_id' => $product['category_id'] === null ? null : (int) $product['category_id'],
@@ -435,10 +458,12 @@ final class Commerce
                 'unit_price' => $hasMemberPrice ? (int) ($product['member_price'] ?? $price) : $price,
                 'fee_bps' => (int) $shop['commission_bps'], 'allocation' => $allocation,
             ];
-            $shops[$shopId] ??= ['warehouses' => [], 'shipping' => 0, 'total' => 0];
             foreach ($allocation as $warehouse => $units) {
                 $shops[$shopId]['warehouses'][$warehouse] = ($shops[$shopId]['warehouses'][$warehouse] ?? 0) + $units;
             }
+        }
+        if ($pickup && count($shops) !== count($pickupLocations)) {
+            throw new RuleViolation('自提门店选择与当前购物车不符，请刷新。');
         }
         $offer = $this->pricePromotion($buyer, $items, $coupon, $lock);
         $subtotal = $memberSavings = 0;
@@ -462,27 +487,28 @@ final class Commerce
         ksort($shops);
         return [
             'cart' => $cart, 'channel' => $channel, 'destination' => $destination, 'coupon' => $coupon, 'promotion' => $offer['promotion'],
+            'pickup_locations' => $pickupLocations,
             'items' => $items, 'shops' => $shops, 'subtotal' => $subtotal,
             'member_savings' => $memberSavings, 'discount' => $discount, 'shipping' => $shipping, 'total' => $subtotal - $discount + $shipping,
         ];
     }
 
-    public function quote(int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null): array
+    public function quote(int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = []): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false));
+        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations));
     }
 
-    public function quoteCart(int $buyer, string $channel, string $destination, ?int $coupon = null): array
+    public function quoteCart(int $buyer, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = []): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->transaction(function () use ($buyer, $channel, $destination, $coupon): array {
+        return $this->transaction(function () use ($buyer, $channel, $destination, $coupon, $pickupLocations): array {
             $this->lockCart($buyer);
             [$cart, $revisions] = $this->selectedCart($buyer);
             if (!$cart) {
                 throw new RuleViolation('请先勾选要结算的商品。');
             }
-            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false);
+            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations);
             $snapshot['cart_revisions'] = $revisions;
             return $this->recordQuote($buyer, $snapshot);
         });
@@ -514,6 +540,10 @@ final class Commerce
                 throw new RuleViolation('报价已过期，请重新报价。');
             }
             $snapshot = json_decode($quote['snapshot'], true, flags: JSON_THROW_ON_ERROR);
+            if ($snapshot['channel'] === 'store' && !isset($snapshot['pickup_locations'])) {
+                throw new RuleViolation('请选择自提门店并重新计算费用。');
+            }
+            $snapshot['pickup_locations'] ??= [];
             $cartRevisions = $snapshot['cart_revisions'] ?? null;
             unset($snapshot['cart_revisions']);
             if ($requireCartQuote && $cartRevisions === null) {
@@ -535,7 +565,8 @@ final class Commerce
                     throw new RuleViolation('购物车内有店铺暂停营业，请更新购物车。');
                 }
             }
-            $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'], $snapshot['coupon'] ?? null, true);
+            $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'],
+                $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations']);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
                 throw new RuleViolation('商品、价格或分仓结果已变化，请重新报价。');
@@ -553,6 +584,11 @@ final class Commerce
             foreach ($current['shops'] as $shop => $totals) {
                 $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders (order_id,shop_id,total,shipping)
                     VALUES (?,?,?,?)', [$order, $shop, $totals['total'], $totals['shipping']]);
+                if (isset($totals['pickup'])) {
+                    $location = $totals['pickup'];
+                    $this->query('INSERT INTO order_pickups (merchant_order_id,pickup_location_id,location_name,location_address)
+                        VALUES (?,?,?,?)', [$merchantOrders[$shop], $location['id'], $location['name'], $location['address']]);
+                }
             }
             foreach ($current['items'] as $product => $item) {
                 $line = $this->insert('INSERT INTO order_items
@@ -759,31 +795,12 @@ final class Commerce
         return $count;
     }
 
-    public function fulfill(int $merchant, int $id, string $tracking): void
-    {
-        $tracking = trim($tracking);
-        if ($tracking === '' || strlen($tracking) > 120) {
-            throw new RuleViolation('请填写自提核验编号。');
-        }
-        $this->transaction(function () use ($merchant, $id, $tracking): void {
-            $actor = $this->shopActor($merchant, 'fulfillment');
-            $this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
-            $order = $this->one("SELECT m.* FROM merchant_orders m JOIN orders o ON o.id=m.order_id
-                WHERE m.id=? AND m.shop_id=? AND o.channel='store' FOR UPDATE", [$id, $actor['shop_id']]);
-            if (!$order || $order['status'] !== 'ready') {
-                throw new RuleViolation('子订单无权访问或当前状态不可履约。');
-            }
-            $this->completeMerchantOrder($order, $merchant, $tracking);
-        });
-    }
-
-    private function completeMerchantOrder(array $order, ?int $actor, ?string $tracking = null): void
+    private function completeMerchantOrder(array $order, ?int $actor): void
     {
         $id = (int) $order['id'];
         $commission = (int) $this->one('SELECT SUM(commission) AS total FROM order_items WHERE merchant_order_id=?',
             [$id])['total'];
-        $this->query("UPDATE merchant_orders SET status='fulfilled',tracking=?,fulfilled_at=UTC_TIMESTAMP() WHERE id=?",
-            [$tracking, $id]);
+        $this->query("UPDATE merchant_orders SET status='fulfilled',fulfilled_at=UTC_TIMESTAMP() WHERE id=?", [$id]);
         $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
             VALUES (?,?,?,'sale',?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
         $this->audit($actor, 'order.fulfilled', $id);

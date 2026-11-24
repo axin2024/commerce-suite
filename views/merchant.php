@@ -4,8 +4,10 @@ $canOperate = in_array($shop['status'], ['active', 'suspended'], true);
 $isOwner = Commerce::canManage($user, 'owner');
 $canCatalog = $canOperate && Commerce::canManage($user, 'catalog');
 $canFulfill = $canOperate && Commerce::canManage($user, 'fulfillment');
+$canPickup = $canOperate && Commerce::canManage($user, 'pickup');
 $canSupport = $canOperate && Commerce::canManage($user, 'support');
 $canFinance = $canOperate && Commerce::canManage($user, 'finance');
+$pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int) $user['id']) : [];
 ?>
 <div class="heading"><h1><?= e($shop['name']) ?></h1><?= badge($shop['status']) ?></div>
 <p class="muted"><?= $shop['kind'] === 'platform' ? '平台自营' : '入驻商家' ?> ·
@@ -16,6 +18,7 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
     <?php if ($isOwner): ?><a href="#business">入驻资料</a><a href="#staff">店铺成员</a><?php endif; ?>
     <?php if ($canCatalog): ?><a href="#products">商品库存</a><?php endif; ?>
     <?php if ($canFulfill): ?><a href="#fulfillment">履约</a><?php endif; ?>
+    <?php if ($canPickup): ?><a href="#pickup">门店自提</a><?php endif; ?>
     <?php if ($canSupport): ?><a href="#refunds">售后</a><?php endif; ?>
     <?php if ($canFinance): ?><a href="#finance">本店账单</a><?php endif; ?>
 </div>
@@ -43,13 +46,22 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
                     <option value="<?= e($value) ?>"><?= e($label) ?></option>
                 <?php endforeach; ?>
             </select></label>
+            <?php if ($pickupLocations): ?>
+                <label>自提门店（门店核销岗位）<select name="pickup_location"><option value="">请选择</option>
+                    <?php foreach ($pickupLocations as $location): ?>
+                        <option value="<?= e($location['id']) ?>"><?= e($location['name']) ?></option>
+                    <?php endforeach; ?>
+                </select></label>
+            <?php endif; ?>
         </div>
         <button>添加成员</button></form>
     </details>
-    <?php foreach ($app->rows("SELECT m.user_id,m.position,m.enabled,u.email FROM shop_members m
-        JOIN users u ON u.id=m.user_id WHERE m.shop_id=? AND m.position<>'owner' ORDER BY m.user_id", [$shop['id']]) as $member): ?>
+    <?php foreach ($app->rows("SELECT m.user_id,m.position,m.enabled,u.email,l.name AS location_name FROM shop_members m
+        JOIN users u ON u.id=m.user_id LEFT JOIN pickup_locations l ON l.id=m.pickup_location_id
+        WHERE m.shop_id=? AND m.position<>'owner' ORDER BY m.user_id", [$shop['id']]) as $member): ?>
         <div class="record">
             <span><?= e($member['email']) ?> · <?= e(Commerce::STAFF_POSITIONS[$member['position']]) ?> ·
+                <?php if ($member['location_name']): ?><?= e($member['location_name']) ?> · <?php endif; ?>
                 <?= $member['enabled'] ? '已启用' : '已停用' ?></span>
             <?php form('shop_member_access'); echo field('member', $member['user_id']), field('enabled', $member['enabled'] ? 0 : 1); ?>
             <button class="secondary"><?= $member['enabled'] ? '停用' : '启用' ?></button></form>
@@ -59,55 +71,52 @@ $canFinance = $canOperate && Commerce::canManage($user, 'finance');
 <?php endif; ?>
 <?php if ($canCatalog) { require __DIR__ . '/catalog_workbench.php'; } ?>
 <?php if ($canFulfill):
-    $merchantOrders = $app->rows("SELECT m.*,o.channel,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
-        WHERE m.shop_id=? AND m.status IN ('ready','partial','shipped','fulfilled') ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
+    $merchantOrders = $app->rows("SELECT m.*,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
+        WHERE m.shop_id=? AND o.channel='web' AND m.status IN ('ready','partial','shipped','fulfilled')
+        ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
 <section class="panel" id="fulfillment">
     <h2>订单履约</h2>
     <?php if (!$merchantOrders): ?><p class="muted">暂无已付款订单。</p><?php endif; ?>
     <?php foreach ($merchantOrders as $order): ?>
         <div class="record">
             <div><strong>#<?= e($order['id']) ?> · <?= cash($order['total']) ?></strong> <?= badge($order['status']) ?>
-                <p class="muted"><?= $order['channel'] === 'web' ? '配送' : '自提' ?> · <?= e($order['destination']) ?></p>
+                <p class="muted"><?= e($order['destination']) ?></p>
                 <?php foreach ($app->rows('SELECT i.name,i.sku,i.quantity,r.color,r.size FROM order_items i
                     LEFT JOIN product_releases r ON r.id=i.product_release_id WHERE i.merchant_order_id=? ORDER BY i.id', [$order['id']]) as $line): ?>
                     <div><?= e($line['name']) ?> × <?= e($line['quantity']) ?>
                         <span class="muted"><?= e($line['sku']) ?> <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?></span></div>
                 <?php endforeach; ?>
             </div>
-            <?php if ($order['channel'] === 'web'):
-                $groups = [];
-                if (in_array($order['status'], ['ready', 'partial'], true)) {
-                    foreach ($app->unshippedLines((int) $order['id']) as $line) {
-                        $groups[$line['warehouse_id']][] = $line;
-                    }
+            <?php
+            $groups = [];
+            if (in_array($order['status'], ['ready', 'partial'], true)) {
+                foreach ($app->unshippedLines((int) $order['id']) as $line) {
+                    $groups[$line['warehouse_id']][] = $line;
                 }
-                foreach ($groups as $warehouse => $lines): ?>
-                    <details><summary><?= e($lines[0]['warehouse_name']) ?> · 新建包裹</summary>
-                        <?php form('shipment_dispatch'); echo field('merchant_order', $order['id']),
-                            field('warehouse', $warehouse), field('key', bin2hex(random_bytes(16))); ?>
-                        <?php foreach ($lines as $line): ?>
-                            <label><?= e($line['sku']) ?> · 待发 <?= e($line['remaining']) ?>
-                                <input type="number" name="quantities[<?= e($line['id']) ?>]" min="0"
-                                    max="<?= e($line['remaining']) ?>" value="<?= e($line['remaining']) ?>" required>
-                            </label>
-                        <?php endforeach; ?>
-                        <label>承运商代码<input name="carrier" maxlength="32" pattern="[A-Za-z0-9_\-]+" required></label>
-                        <label>运单号<input name="tracking" maxlength="80" pattern="[A-Za-z0-9_\-]+" required></label>
-                        <button>登记发货</button></form>
-                    </details>
-                <?php endforeach;
-                $parcels = $app->shipments((int) $order['id']);
-                require __DIR__ . '/shipment_list.php';
-            elseif ($order['status'] === 'ready'): ?>
-                <?php form('fulfill'); echo field('merchant_order', $order['id']); ?>
-                <label>自提核验编号<input name="tracking" maxlength="40" required></label>
-                <button>确认履约</button></form>
-            <?php endif; ?>
+            }
+            foreach ($groups as $warehouse => $lines): ?>
+                <details><summary><?= e($lines[0]['warehouse_name']) ?> · 新建包裹</summary>
+                    <?php form('shipment_dispatch'); echo field('merchant_order', $order['id']),
+                        field('warehouse', $warehouse), field('key', bin2hex(random_bytes(16))); ?>
+                    <?php foreach ($lines as $line): ?>
+                        <label><?= e($line['sku']) ?> · 待发 <?= e($line['remaining']) ?>
+                            <input type="number" name="quantities[<?= e($line['id']) ?>]" min="0"
+                                max="<?= e($line['remaining']) ?>" value="<?= e($line['remaining']) ?>" required>
+                        </label>
+                    <?php endforeach; ?>
+                    <label>承运商代码<input name="carrier" maxlength="32" pattern="[A-Za-z0-9_\-]+" required></label>
+                    <label>运单号<input name="tracking" maxlength="80" pattern="[A-Za-z0-9_\-]+" required></label>
+                    <button>登记发货</button></form>
+                </details>
+            <?php endforeach;
+            $parcels = $app->shipments((int) $order['id']);
+            require __DIR__ . '/shipment_list.php'; ?>
             <?php if ($order['tracking']): ?><span><?= e($order['tracking']) ?></span><?php endif; ?>
         </div>
     <?php endforeach; ?>
 </section>
 <?php endif; ?>
+<?php if ($canPickup) { require __DIR__ . '/pickup_workbench.php'; } ?>
 <?php if ($canSupport):
     $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.id=r.item_id
         JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE m.shop_id=? ORDER BY r.id DESC LIMIT 50', [$shop['id']]); ?>

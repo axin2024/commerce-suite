@@ -87,12 +87,13 @@ trait InventoryOperations
         });
     }
 
-    private function allocateWarehouses(int $product, int $quantity, string $channel, bool $lock): array
+    private function allocateWarehouses(int $product, int $quantity, ?int $pickupWarehouse, bool $lock): array
     {
         $stock = $this->rows("SELECT b.warehouse_id,b.stock-b.reserved AS available FROM warehouse_stock b
             JOIN warehouses w ON w.id=b.warehouse_id WHERE b.product_id=?"
-            . ($channel === 'store' ? " AND w.code='MAIN'" : '')
-            . " ORDER BY (w.code='MAIN') DESC,b.warehouse_id" . ($lock ? ' FOR UPDATE' : ''), [$product]);
+            . ($pickupWarehouse === null ? '' : ' AND b.warehouse_id=?')
+            . " ORDER BY (w.code='MAIN') DESC,b.warehouse_id" . ($lock ? ' FOR UPDATE' : ''),
+            $pickupWarehouse === null ? [$product] : [$product, $pickupWarehouse]);
         $allocation = [];
         foreach ($stock as $balance) {
             $take = min($quantity, (int) $balance['available']);

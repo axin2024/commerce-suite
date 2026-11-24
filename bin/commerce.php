@@ -34,6 +34,10 @@ try {
             foreach ([$north, $pond] as $merchant) {
                 $app->reviewShop($admin, (int) $app->profile($merchant)['shop_id'], true);
             }
+            foreach ([$north => '北仓河畔店', $pond => '池畔工房集市店'] as $merchant => $name) {
+                $warehouse = (int) $app->merchantWarehouses($merchant)[0]['id'];
+                $app->savePickupLocation($merchant, 0, $warehouse, 'STORE', $name, '演示园区 · ' . $name, true);
+            }
             $bags = $app->createCategory($admin, '箱包');
             $home = $app->createCategory($admin, '家居');
             foreach ([

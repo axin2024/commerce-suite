@@ -77,8 +77,8 @@ main { min-height: 70vh; padding-block: 1.5rem 2.5rem; }
 .suborder { margin-top: .55rem; }
 .suborder .record { border-top-style: dashed; }
 .badge { display: inline-block; border-radius: 999px; padding: .15em .6em; background: #edf0e9; color: #46574a; font-size: .76rem; vertical-align: middle; }
-.badge.pending, .badge.unpaid, .badge.ready { background: #f8e8c5; color: #644719; }
-.badge.active, .badge.paid, .badge.fulfilled, .badge.approved { background: #d8eedc; color: #245137; }
+.badge.pending, .badge.unpaid, .badge.ready, .badge.pickup_pending { background: #f8e8c5; color: #644719; }
+.badge.active, .badge.paid, .badge.fulfilled, .badge.approved, .badge.pickup_prepared { background: #d8eedc; color: #245137; }
 .badge.rejected, .badge.cancelled { background: #f7e1d9; color: #742e1d; }
 .flash { padding: .7rem 1rem; border: 1px solid #86b596; border-radius: 8px; background: #e3f1e5; margin-bottom: 1.05rem; }
 .flash.error { background: #fbe7df; border-color: #d59b88; }
@@ -92,6 +92,13 @@ table { width: 100%; text-align: left; border-collapse: collapse; white-space: n
 th, td { border-bottom: 1px solid var(--line); padding: .6em .8em; }
 th { background: #eef1e8; color: var(--ink); }
 .footer { border-top: 1px solid var(--line); padding-block: 1rem; }
+.pickup-barcode {
+    display: inline-flex; height: 3.5rem; padding: .4rem 10px; box-sizing: content-box;
+    background: #fff; overflow: hidden;
+}
+.pickup-barcode span { display: block; flex: 0 0 1px; }
+.pickup-barcode .wide { flex-basis: 2px; }
+.pickup-barcode .bar { background: #000; }
 @media (max-width: 38rem) {
     .wrap { width: calc(100% - 1.5rem); }
     .panel, .product { padding: .9rem; }

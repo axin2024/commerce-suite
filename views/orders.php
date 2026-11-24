@@ -1,4 +1,6 @@
 <?php
+$newPickupCode = $_SESSION['pickup_code'] ?? null;
+unset($_SESSION['pickup_code']);
 $orders = $app->rows('SELECT o.*,r.name AS promotion_name FROM orders o LEFT JOIN promotion_revisions r ON r.id=o.promotion_revision_id
     WHERE o.buyer_id=? ORDER BY o.id DESC LIMIT 50', [$id]);
 $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.id=r.item_id
@@ -12,7 +14,8 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
             <h2>订单 #<?= e($order['id']) ?> <?= badge($order['status']) ?></h2>
             <strong class="amount"><?= cash($order['total']) ?></strong>
         </div>
-        <p class="muted"><?= $order['channel'] === 'web' ? '配送' : '自提' ?> · <?= e($order['destination']) ?> · <?= e($order['created_at']) ?> UTC</p>
+        <p class="muted"><?= $order['channel'] === 'web' ? '配送 · ' . e($order['destination']) : '门店自提' ?>
+            · <?= e($order['created_at']) ?> UTC</p>
         <?php if ($order['promotion_name']): ?>
             <p class="muted"><?= e($order['promotion_name']) ?> · 优惠 <?= cash($order['discount']) ?></p>
         <?php endif; ?>
@@ -28,16 +31,38 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                 <button class="secondary">取消订单</button></form>
             </div>
         <?php endif; ?>
-        <?php foreach ($app->rows('SELECT m.*,s.name FROM merchant_orders m JOIN shops s ON s.id=m.shop_id
+        <?php foreach ($app->rows('SELECT m.*,s.name,p.location_name,p.location_address,p.prepared_at,p.used_at,p.code_expires_at
+            FROM merchant_orders m JOIN shops s ON s.id=m.shop_id LEFT JOIN order_pickups p ON p.merchant_order_id=m.id
             WHERE m.order_id=? ORDER BY m.id', [$order['id']]) as $merchantOrder): ?>
             <section class="suborder">
-                <div class="heading"><h3><?= e($merchantOrder['name']) ?> <?= badge($merchantOrder['status']) ?></h3>
+                <div class="heading"><h3><?= e($merchantOrder['name']) ?>
+                    <?= badge($merchantOrder['status'] === 'ready' && $merchantOrder['location_name']
+                        ? ($merchantOrder['prepared_at'] ? 'pickup_prepared' : 'pickup_pending') : $merchantOrder['status']) ?></h3>
                     <strong><?= cash($merchantOrder['total']) ?></strong></div>
                 <?php if ($merchantOrder['tracking']): ?><p class="muted">履约单号 <?= e($merchantOrder['tracking']) ?></p><?php endif; ?>
                 <?php if ($order['channel'] === 'web'):
                     $parcels = $app->shipments((int) $merchantOrder['id']);
                     require __DIR__ . '/shipment_list.php';
                 endif; ?>
+                <?php if ($merchantOrder['location_name']): ?>
+                    <p class="muted">子订单 #<?= e($merchantOrder['id']) ?> · <?= e($merchantOrder['location_name']) ?>
+                        · <?= e($merchantOrder['location_address']) ?></p>
+                    <?php if ($merchantOrder['used_at']): ?>
+                        <p class="muted">已提货 <?= e($merchantOrder['used_at']) ?> UTC</p>
+                    <?php elseif ($merchantOrder['status'] === 'ready' && $merchantOrder['prepared_at']): ?>
+                        <?php if (($newPickupCode['order'] ?? null) === (int) $merchantOrder['id']):
+                            $pickupCode = $newPickupCode['code'];
+                            require __DIR__ . '/pickup_barcode.php';
+                        else:
+                            form('pickup_issue'); echo field('merchant_order', $merchantOrder['id']); ?>
+                            <?php if ($merchantOrder['code_expires_at']): ?>
+                                <p class="muted">重新生成后，前一个提货码作废。</p>
+                            <?php endif; ?>
+                            <button type="submit" class="secondary"><?= $merchantOrder['code_expires_at'] ? '重新生成提货码' : '生成提货码' ?></button>
+                            </form>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                <?php endif; ?>
                 <?php foreach ($app->rows('SELECT i.*,r.color,r.size,
                     (SELECT COALESCE(SUM(r.quantity),0) FROM refunds r WHERE r.item_id=i.id AND r.status=\'pending\') AS pending_qty
                     FROM order_items i LEFT JOIN product_releases r ON r.id=i.product_release_id

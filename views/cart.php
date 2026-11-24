@@ -29,17 +29,36 @@
             <h2>结算</h2>
             <?php
             $savedQuote = $_SESSION['quote'] ?? null;
+            if (($savedQuote['channel'] ?? null) === 'store' && !isset($savedQuote['pickup_locations'])) {
+                $savedQuote = null;
+            }
             $selected = array_filter($cartLines, static fn(array $line): bool => (bool) $line['selected']);
             $revisions = array_column($selected, 'revision', 'product_id');
             $quote = ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
             $coupons = array_filter($app->buyerCoupons((int) $user['id']), static fn(array $coupon): bool => $coupon['status'] === 'available');
+            $pickupOptions = [];
+            foreach ($app->checkoutPickupLocations((int) $user['id']) as $location) {
+                $pickupOptions[$location['shop_id']][] = $location;
+            }
             form('quote');
             ?>
             <label>履约方式<select name="channel">
                 <option value="web">快递配送</option>
                 <option value="store"<?= ($savedQuote['channel'] ?? '') === 'store' ? ' selected' : '' ?>>门店自提</option>
             </select></label>
-            <label>配送地址或自提点<input name="destination" value="<?= e($savedQuote['destination'] ?? '') ?>" maxlength="80" required></label>
+            <label>配送地址<input name="destination" value="<?= e(($savedQuote['channel'] ?? '') === 'web' ? $savedQuote['destination'] : '') ?>"
+                maxlength="80" placeholder="快递配送时填写"></label>
+            <?php foreach (array_column($selected, 'shop_name', 'shop_id') as $shop => $name): ?>
+                <label><?= e($name) ?>自提门店
+                    <select name="pickup_locations[<?= e($shop) ?>]">
+                        <option value=""><?= isset($pickupOptions[$shop]) ? '门店自提时选择' : '暂无可选门店' ?></option>
+                        <?php foreach ($pickupOptions[$shop] ?? [] as $location): ?>
+                            <option value="<?= e($location['id']) ?>"<?= ($savedQuote['pickup_locations'][$shop] ?? null) === $location['id'] ? ' selected' : '' ?>>
+                                <?= e($location['name']) ?> · <?= e($location['address']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+            <?php endforeach; ?>
             <?php if ($coupons): ?>
                 <label>优惠券<select name="coupon">
                     <option value="">系统匹配可用活动</option>
@@ -61,6 +80,13 @@
                     <?php endif; ?>
                     <dt>应付金额</dt><dd><strong><?= cash($quote['total']) ?></strong></dd>
                 </dl>
+                <?php if ($quote['channel'] === 'store'): ?>
+                    <ul class="muted">
+                        <?php foreach ($quote['shops'] as $totals): ?>
+                            <li><?= e($totals['pickup']['name']) ?> · <?= e($totals['pickup']['address']) ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
                 <?php form('place'); echo field('token', $quote['token']); ?>
                 <button>确认订单</button></form>
             <?php endif; ?>

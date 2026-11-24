@@ -30,20 +30,56 @@ function denied(callable $operation, string $scenario): void
     throw new RuntimeException('Expected rejection: ' . $scenario);
 }
 
-if (($argv[1] ?? '') === 'race-worker') {
+if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->fetchColumn(), '_test')) {
+    throw new RuntimeException('Use APP_DEMO=1 and a disposable database ending in _test.');
+}
+
+$worker = $argv[1] ?? '';
+if (in_array($worker, ['race-worker', 'pickup-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
-        $app->place((int) $argv[2], $argv[3]);
-        echo "placed\n";
+        if ($worker === 'race-worker') {
+            $app->place((int) $argv[2], $argv[3]);
+            echo "placed\n";
+        } else {
+            echo $app->redeemPickup((int) $argv[2], (int) $argv[3], (int) $argv[4], $argv[5]) ? "redeemed\n" : "already-redeemed\n";
+        }
     } catch (RuleViolation) {
         echo "unavailable\n";
     }
     exit;
 }
 
-if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->fetchColumn(), '_test')) {
-    throw new RuntimeException('Use APP_DEMO=1 and a disposable database ending in _test.');
+function compete(string $worker, array $jobs): array
+{
+    $workers = [];
+    $command = [PHP_BINARY];
+    if (PHP_OS_FAMILY === 'Windows') {
+        array_push($command, '-d', 'extension=pdo_mysql');
+    }
+    array_push($command, __FILE__, $worker);
+    foreach ($jobs as $args) {
+        $process = proc_open(array_merge($command, array_map('strval', $args)), [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
+        if (!is_resource($process) || trim((string) fgets($pipes[1])) !== 'ready') {
+            throw new RuntimeException('Race worker failed to start.');
+        }
+        $workers[] = [$process, $pipes];
+    }
+    foreach ($workers as [, $pipes]) {
+        fwrite($pipes[0], "go\n");
+        fclose($pipes[0]);
+    }
+    $outcomes = [];
+    foreach ($workers as [$process, $pipes]) {
+        $outcomes[] = trim(stream_get_contents($pipes[1]));
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        same(0, proc_close($process), 'worker exit: ' . $stderr);
+    }
+    sort($outcomes);
+    return $outcomes;
 }
 $tag = bin2hex(random_bytes(5));
 $pw = 'IntegrationFixture-6-2026';
@@ -85,6 +121,19 @@ $catalogStaff = $app->addShopMember($north, $catalogEmail, $pw, 'catalog');
 $fulfillmentStaff = $app->addShopMember($north, "north-ship-$tag@example.test", $pw, 'fulfillment');
 $supportStaff = $app->addShopMember($north, "north-cs-$tag@example.test", $pw, 'support');
 $financeStaff = $app->addShopMember($pond, "pond-books-$tag@example.test", $pw, 'finance');
+$main = (int) $app->merchantWarehouses($north)[0]['id'];
+$foreignWarehouse = (int) $app->merchantWarehouses($pond)[0]['id'];
+$northPickup = $app->savePickupLocation($north, 0, $main, 'NORTH', '北仓自提门店', '北仓园区 1 号', true);
+$pondPickup = $app->savePickupLocation($pond, 0, $foreignWarehouse, 'POND', '池畔自提门店', '池畔园区 2 号', true);
+$northLocations = [$northShop => $northPickup];
+$pondLocations = [$pondShop => $pondPickup];
+$bothLocations = $northLocations + $pondLocations;
+denied(fn() => $app->savePickupLocation($north, 0, $foreignWarehouse, 'OTHER', '跨店仓', '另一店地址', true), 'warehouse ownership for pickup');
+denied(fn() => $app->savePickupLocation($catalogStaff, $northPickup, 0, 'CHANGED', '越权门店', '越权地址', true),
+    'catalog staff cannot configure pickup locations');
+denied(fn() => $app->addShopMember($north, "pickup-cross-$tag@example.test", $pw, 'pickup', $pondPickup), 'staff location belongs to the same shop');
+denied(fn() => $app->addShopMember($north, "pickup-missing-$tag@example.test", $pw, 'pickup'), 'pickup role requires an assignment');
+$pickupStaff = $app->addShopMember($north, "north-pickup-$tag@example.test", $pw, 'pickup', $northPickup);
 same($catalogStaff, $app->authenticate($catalogEmail, $pw), 'active staff can sign in');
 denied(fn() => $app->addShopMember($catalogStaff, "escalate-$tag@example.test", $pw, 'finance'), 'staff cannot create accounts');
 denied(fn() => $app->setShopMemberEnabled($pond, $catalogStaff, false), 'cross-shop staff revocation refused');
@@ -114,7 +163,7 @@ denied(fn() => $app->submitSku($pond, $a, "N-$tag", '跨店改名', 1, 0, $bags,
 denied(fn() => $app->reviewSku($admin, $hiddenRelease, false), 'rejecting SKU requires a reason');
 $app->reviewSku($admin, $hiddenRelease, false, '分类不符');
 denied(fn() => $app->reviewSku($admin, $hiddenRelease, true), 'rejected release cannot later be approved');
-denied(fn() => $app->quote($buyer, [$hidden => 1], 'store', 'Store A'), 'draft not purchasable');
+denied(fn() => $app->quote($buyer, [$hidden => 1], 'store', '', pickupLocations: $northLocations), 'draft not purchasable');
 $blueRelease = $app->submitSku($catalogStaff, 0, "B-$tag", '北仓帆布包', 12000, 3, $bags, '北仓帆布包', '蓝色', 'M', false, true);
 $blueSku = $app->reviewSku($admin, $blueRelease, true);
 same([], $app->catalog("B-$tag", $bags, 'web'), 'pickup-only variant absent from delivery catalog');
@@ -122,14 +171,18 @@ same($blueSku, (int) $app->catalog("B-$tag", $bags, 'store')[0]['id'], 'pickup-o
 denied(fn() => $app->quote($buyer, [$blueSku => 1], 'web', '测试配送地址'), 'checkout revalidates sales channel');
 $duplicateVariant = $app->submitSku($north, 0, "X-$tag", '同红色规格', 12000, 1, $bags, '北仓帆布包', '红色', 'M', true, true);
 denied(fn() => $app->reviewSku($admin, $duplicateVariant, true), 'duplicate variant refused at publication');
-$blueQuote = $app->quote($buyer, [$blueSku => 1], 'store', 'Store A');
+$blueQuote = $app->quote($buyer, [$blueSku => 1], 'store', '', pickupLocations: $northLocations);
 $app->unlistSku($catalogStaff, $blueSku);
 same([], $app->catalog("B-$tag"), 'unlisted variant disappears from product search');
 denied(fn() => $app->place($buyer, $blueQuote['token']), 'stale catalog result cannot be checked out after unlisting');
 same([1 => 0, 2 => 0, 3 => 1], Commerce::allocate(1, [1 => 1, 2 => 1, 3 => 1]), 'last SKU receives the rounding remainder');
 same([3 => 1, 1 => 0, 2 => 1], Commerce::allocate(2, [3 => 1, 1 => 3, 2 => 3]), 'rounding moves backward when last line lacks capacity');
 same(19600, $app->quote($buyer, [$a => 1, $b => 1], 'web', '测试配送地址')['total'], 'per-shop shipping');
-$quote = $app->quote($buyer, [$b => 1, $a => 1], 'store', '一号自提点');
+denied(fn() => $app->quote($buyer, [$a => 1, $b => 1], 'store', '', pickupLocations: $northLocations),
+    'all pickup shops need separate selections');
+denied(fn() => $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: [$northShop => $pondPickup]),
+    'another merchant location cannot be substituted');
+$quote = $app->quote($buyer, [$b => 1, $a => 1], 'store', '', pickupLocations: $bothLocations);
 same(18000, $quote['total'], 'combined shopper payment');
 same(10800, $quote['shops'][$northShop]['total'], 'merchant A split');
 same(7200, $quote['shops'][$pondShop]['total'], 'merchant B split');
@@ -150,24 +203,41 @@ denied(fn() => $app->adjustStock($north, $a, 10, 0),
     'outdated stock edit cannot restore paid inventory');
 $merchantOrders = $app->rows('SELECT id,shop_id FROM merchant_orders WHERE order_id=? ORDER BY shop_id', [$order]);
 [$northOrder, $pondOrder] = array_map('intval', array_column($merchantOrders, 'id'));
-denied(fn() => $app->fulfill($pond, $northOrder, 'PICK-01'), 'fulfillment ownership');
-denied(fn() => $app->fulfill($catalogStaff, $northOrder, 'PICK-01'), 'catalog staff cannot fulfill');
+denied(fn() => $app->preparePickup($pond, $northOrder, $northPickup), 'pickup order ownership');
+denied(fn() => $app->preparePickup($catalogStaff, $northOrder, $northPickup), 'catalog staff cannot prepare pickup');
+denied(fn() => $app->preparePickup($fulfillmentStaff, $northOrder, $northPickup), 'delivery staff cannot prepare pickup');
+denied(fn() => $app->issuePickupCode($buyer, $northOrder), 'buyer cannot issue code while shop prepares the order');
 $aItem = (int) $app->rows('SELECT id FROM order_items WHERE merchant_order_id=?', [$northOrder])[0]['id'];
 $sold = $app->rows('SELECT i.sku,r.color,r.size FROM order_items i JOIN product_releases r ON r.id=i.product_release_id WHERE i.id=?', [$aItem])[0];
 same(["N-$tag", '红色', 'M'], array_values($sold), 'checkout records the actual red M SKU and its release');
 same([3, 0], array_map('intval', array_values($app->rows('SELECT stock,reserved FROM products WHERE id=?', [$blueSku])[0])),
     'checkout of red variant leaves blue inventory unchanged');
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '测试', bin2hex(random_bytes(16))), 'refund requires fulfillment');
-$beforeSuspension = $app->quote($buyer, [$a => 1], 'store', '一号自提点');
+$beforeSuspension = $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: $northLocations);
 denied(fn() => $app->setShopSuspended($finance, $northShop, true, '暂停营业'), 'finance cannot suspend a shop');
 $app->setShopSuspended($admin, $northShop, true, '停业盘点');
 same([], $app->catalog("N-$tag"), 'suspended shop removed from catalog');
 denied(fn() => $app->place($buyer, $beforeSuspension['token']), 'stale quote cannot order from suspended shop');
-denied(fn() => $app->quote($buyer, [$a => 1], 'store', '一号自提点'), 'suspended shop cannot receive a new quote');
+denied(fn() => $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: $northLocations), 'suspended shop cannot receive a new quote');
 same($order, $app->place($buyer, $quote['token']), 'existing order replay remains available after closing');
-$app->fulfill($fulfillmentStaff, $northOrder, 'PICK-01');
-$app->fulfill($pond, $pondOrder, 'PICK-02');
-denied(fn() => $app->fulfill($north, $northOrder, 'PICK-01'), 'fulfillment cannot duplicate sale entry');
+$app->preparePickup($pickupStaff, $northOrder, $northPickup);
+$app->preparePickup($pond, $pondOrder, $pondPickup);
+denied(fn() => $app->issuePickupCode($otherBuyer, $northOrder), 'another buyer cannot issue code');
+$firstCode = $app->issuePickupCode($buyer, $northOrder);
+$secondCode = $app->issuePickupCode($buyer, $northOrder);
+$pondCode = $app->issuePickupCode($buyer, $pondOrder);
+denied(fn() => $app->redeemPickup($pickupStaff, $northOrder, $northPickup, $firstCode), 'reissued pickup code invalidates first code');
+denied(fn() => $app->redeemPickup($pickupStaff, $northOrder, $northPickup, $pondCode), 'code is scoped to the merchant order');
+$db->prepare('UPDATE order_pickups SET code_expires_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE merchant_order_id=?')
+    ->execute([$northOrder]);
+denied(fn() => $app->redeemPickup($pickupStaff, $northOrder, $northPickup, $secondCode), 'expired pickup code is rejected');
+$currentCode = $app->issuePickupCode($buyer, $northOrder);
+same(true, $app->redeemPickup($pickupStaff, $northOrder, $northPickup, $currentCode), 'store staff redeems its own pickup');
+same(false, $app->redeemPickup($north, $northOrder, $northPickup, $currentCode), 'pickup replay cannot duplicate the sale');
+same(true, $app->redeemPickup($pond, $pondOrder, $pondPickup, $pondCode), 'another shop can redeem its own pickup');
+same($pickupStaff, (int) $app->rows('SELECT used_by FROM order_pickups WHERE merchant_order_id=?', [$northOrder])[0]['used_by'],
+    'pickup redemption keeps the first operator across replay');
+denied(fn() => $app->issuePickupCode($buyer, $northOrder), 'fulfilled pickup cannot reissue a code');
 $refundKey = bin2hex(random_bytes(16));
 $refund = $app->requestRefund($buyer, $aItem, 1, '申请退款', $refundKey);
 same($refund, $app->requestRefund($buyer, $aItem, 1, '申请退款', $refundKey), 'refund replay');
@@ -199,7 +269,7 @@ $memberEmail = "member-$tag@example.test";
 $memberBuyer = $app->register($memberEmail, $pw);
 denied(fn() => $app->setMemberLevel($memberBuyer, $memberEmail, 'plus'), 'buyers cannot upgrade themselves');
 $app->setMemberLevel($admin, $memberEmail, 'plus');
-$memberQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收');
+$memberQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', pickupLocations: $bothLocations);
 same(18000, $memberQuote['total'], 'member prices are applied before automatic campaign threshold');
 same(2000, $memberQuote['member_savings'], 'member saving recorded');
 same(0, $memberQuote['discount'], 'automatic campaign does not apply below its member-price threshold');
@@ -207,15 +277,15 @@ $couponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店不叠加�
 $campaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$couponVersion])[0]['promotion_id'];
 same(true, $app->claimCoupon($memberBuyer, $campaign), 'coupon claimed once');
 same(false, $app->claimCoupon($memberBuyer, $campaign), 'second coupon claim already received');
-denied(fn() => $app->quote($buyer, [$a => 1, $b => 1], 'store', '越权测试', $campaign), 'cannot use another buyer’s claim');
-$couponQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+denied(fn() => $app->quote($buyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations), 'cannot use another buyer’s claim');
+$couponQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
 same(0, $couponQuote['member_savings'], 'non-stackable campaign uses listed prices');
 same([10800, 7200], array_column($couponQuote['shops'], 'total'), 'coupon apportioned to shop totals in cents');
 $newCouponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店券新版', 20000, 1900, true, false);
-$stillOriginal = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+$stillOriginal = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
 same($couponVersion, $stillOriginal['promotion']['revision_id'], 'existing claims keep the issued campaign version');
 same(true, $app->claimCoupon($otherBuyer, $campaign), 'new buyer may claim the latest campaign');
-$otherCoupon = $app->quote($otherBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+$otherCoupon = $app->quote($otherBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
 same([$newCouponVersion, 1900], [$otherCoupon['promotion']['revision_id'], $otherCoupon['discount']], 'new claim uses current version');
 $couponEnds = gmdate('Y-m-d\TH:i', time() + 3600);
 $scopedVersion = $app->publishPromotion($admin, "scoped-$tag", '箱包分类专享', 10000, 500, true, true, $bags, $couponEnds);
@@ -223,7 +293,7 @@ $couponEndsStored = $app->rows('SELECT ends_at FROM promotion_revisions WHERE id
 same(str_replace('T', ' ', $couponEnds) . ':00', $couponEndsStored, 'campaign end time stored as UTC');
 $scoped = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$scopedVersion])[0]['promotion_id'];
 $app->claimCoupon($memberBuyer, $scoped);
-denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '分类活动验收', $scoped),
+denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $scoped, $bothLocations),
     'out-of-scope seller does not count toward a cross-shop coupon');
 $app->setPromotionEnabled($admin, $campaign, false);
 denied(fn() => $app->place($memberBuyer, $couponQuote['token']), 'disabled campaign invalidates coupon quote');
@@ -232,10 +302,10 @@ $db->prepare('UPDATE quotes SET expires_at=UTC_TIMESTAMP() - INTERVAL 1 SECOND W
 denied(fn() => $app->place($memberBuyer, $couponQuote['token']), 'expired quote cannot create a discounted order');
 $heldCouponOrder = $app->place($memberBuyer, $stillOriginal['token']);
 same('held', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'unpaid order holds coupon');
-denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign), 'held coupon cannot fund another order');
+denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations), 'held coupon cannot fund another order');
 same(true, $app->cancel($heldCouponOrder, $memberBuyer), 'cancel coupon order');
 same('available', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'cancel returns coupon to the same member');
-$requoted = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+$requoted = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
 $paidCouponOrder = $app->place($memberBuyer, $requoted['token']);
 $app->demoPay($memberBuyer, $paidCouponOrder, "coupon-pay-$tag", 18000);
 same('used', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'payment consumes coupon');
@@ -244,7 +314,7 @@ same($couponVersion, (int) $app->rows('SELECT promotion_revision_id FROM orders 
 $freeVersion = $app->publishPromotion($admin, "free-$tag", '全额优惠验收', 20000, 20000, true, false);
 $freeCampaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$freeVersion])[0]['promotion_id'];
 $app->claimCoupon($buyer, $freeCampaign);
-$zero = $app->quote($buyer, [$a => 1, $b => 1], 'store', '零元验收', $freeCampaign);
+$zero = $app->quote($buyer, [$a => 1, $b => 1], 'store', '', $freeCampaign, $bothLocations);
 same(0, $zero['total'], 'full discount creates a zero amount order');
 $zeroOrder = $app->place($buyer, $zero['token']);
 same('promotion', $app->rows('SELECT provider FROM payments WHERE order_id=?', [$zeroOrder])[0]['provider'],
@@ -253,7 +323,7 @@ same('promotion', $app->rows('SELECT provider FROM payments WHERE order_id=?', [
 $app->setCartLine($buyer, $a, 1, true);
 $app->setCartLine($buyer, $b, 2, false);
 same([], $app->cartLines($otherBuyer), 'cart isolated to buyer account');
-$cartQuote = $app->quoteCart($buyer, 'store', '购物车自提');
+$cartQuote = $app->quoteCart($buyer, 'store', '', pickupLocations: $northLocations);
 same([$a => 1], $cartQuote['cart'], 'unselected lines excluded from quote');
 same(12000, $cartQuote['total'], 'single selected SKU has no cross-shop discount');
 $oldRevision = $cartQuote['cart_revisions'][$a];
@@ -269,25 +339,23 @@ same([1, 2], array_map('intval', array_column($app->cartLines($buyer), 'quantity
 $app->importSessionCart($otherBuyer, [$b => 1]);
 same([$b], array_map('intval', array_column($app->cartLines($otherBuyer), 'product_id')), 'legacy cart copied once');
 $app->setCartLine($otherBuyer, $b, 1, false);
-denied(fn() => $app->quoteCart($otherBuyer, 'store', '购物车自提'), 'no selected cart lines');
-$directQuote = $app->quote($buyer, [$a => 1], 'store', '购物车自提');
+denied(fn() => $app->quoteCart($otherBuyer, 'store', ''), 'no selected cart lines');
+$directQuote = $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: $northLocations);
 denied(fn() => $app->place($buyer, $directQuote['token'], requireCartQuote: true), 'web checkout requires a cart-bound quote');
-$cartQuote = $app->quoteCart($buyer, 'store', '购物车自提');
+$cartQuote = $app->quoteCart($buyer, 'store', '', pickupLocations: $northLocations);
 $cartOrder = $app->place($buyer, $cartQuote['token'], requireCartQuote: true);
 same($cartOrder, $app->place($buyer, $cartQuote['token'], requireCartQuote: true), 'cart checkout replay after clearing');
 same([$b], array_map('intval', array_column($app->cartLines($buyer), 'product_id')), 'checkout keeps unselected lines');
 same(true, $app->cancel($cartOrder, $buyer), 'test cart hold released');
 
-$main = (int) $app->merchantWarehouses($north)[0]['id'];
 $east = $app->createWarehouse($catalogStaff, "EAST-$tag", '东区仓', '示例东区配送中心');
-$foreignWarehouse = (int) $app->merchantWarehouses($pond)[0]['id'];
 denied(fn() => $app->createWarehouse($catalogStaff, 'MAIN', '第二主仓', '示例地址'), 'warehouse code unique inside shop');
 denied(fn() => $app->createWarehouse($supportStaff, 'NO', '售后无权限', '示例地址'), 'warehouse creation requires catalog access');
 $multiRelease = $app->submitSku($north, 0, "WH-$tag", '分仓验收商品', 1200, 1, $bags, '分仓商品', '', '', true, true);
 $multiSku = $app->reviewSku($admin, $multiRelease, true);
 denied(fn() => $app->adjustStock($north, $multiSku, 3, 0, $foreignWarehouse), 'cannot adjust stock in another shop’s warehouse');
 $app->adjustStock($catalogStaff, $multiSku, 2, 0, $east);
-denied(fn() => $app->quote($buyer, [$multiSku => 2], 'store', '门店自提'), 'pickup cannot allocate remote delivery stock');
+denied(fn() => $app->quote($buyer, [$multiSku => 2], 'store', '', pickupLocations: $northLocations), 'pickup cannot allocate remote delivery stock');
 $multiQuote = $app->quote($buyer, [$multiSku => 3], 'web', '分仓配送地址');
 same([$main => 1, $east => 2], $multiQuote['items'][$multiSku]['allocation'], 'one SKU distributed between two warehouses');
 same(1600, $multiQuote['shipping'], 'delivery charge calculated per shipping group');
@@ -321,7 +389,7 @@ $trackingB = "B-$tag";
 $trackingC = "C-$tag";
 $deliveryStatus = static fn(): string => $app->rows('SELECT status FROM merchant_orders WHERE id=?', [$deliveryOrder])[0]['status'];
 $deliveryLedger = static fn(): array => $app->rows('SELECT kind,gross FROM ledger WHERE merchant_order_id=?', [$deliveryOrder]);
-denied(fn() => $app->fulfill($north, $deliveryOrder, 'BYPASS'), 'delivery cannot be completed by the pickup action');
+denied(fn() => $app->preparePickup($north, $deliveryOrder, $northPickup), 'delivery cannot use the pickup action');
 denied(fn() => $app->dispatchShipment($pond, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
     'other shop cannot dispatch delivery');
 denied(fn() => $app->dispatchShipment($catalogStaff, $deliveryOrder, $main, 'demo', $trackingA, [$mainLine => 1], $shipmentKey),
@@ -356,36 +424,45 @@ same([['kind' => 'sale', 'gross' => $multiPaidQuote['total']]], $deliveryLedger(
 same([1, 1, 1], array_map('intval', array_column($app->shipments($deliveryOrder), 'units')), 'one shipment row per parcel');
 same([[$main, 0, 0], [$east, 0, 0]], $multiBalance(), 'shipping does not deduct paid stock again');
 
+$eastPickup = $app->savePickupLocation($north, 0, $east, 'EAST', '东区自提门店', '东区 10 号', true);
+$eastStaff = $app->addShopMember($north, "north-east-$tag@example.test", $pw, 'pickup', $eastPickup);
+$eastLocations = [$northShop => $eastPickup];
+$app->adjustStock($north, $multiSku, 2, (int) $app->rows('SELECT version FROM products WHERE id=?', [$multiSku])[0]['version'], $east);
+$eastQuote = $app->quote($buyer, [$multiSku => 1], 'store', '', pickupLocations: $eastLocations);
+same([$east => 1], $eastQuote['items'][$multiSku]['allocation'], 'pickup selects the store inventory warehouse');
+$app->savePickupLocation($north, $eastPickup, 0, 'EAST', '东区自提门店', '东区 12 号', true);
+denied(fn() => $app->place($buyer, $eastQuote['token']), 'location address change requires a new quote');
+$eastQuote = $app->quote($buyer, [$multiSku => 1], 'store', '', pickupLocations: $eastLocations);
+$eastParent = $app->place($buyer, $eastQuote['token']);
+$eastOrder = (int) $app->rows('SELECT id FROM merchant_orders WHERE order_id=?', [$eastParent])[0]['id'];
+same([[$main, 0, 0], [$east, 2, 1]], $multiBalance(), 'pickup hold stays in the selected store inventory');
+denied(fn() => $app->preparePickup($eastStaff, $eastOrder, $eastPickup), 'unpaid order cannot be prepared');
+denied(fn() => $app->issuePickupCode($buyer, $eastOrder), 'unpaid order cannot reveal a code');
+$app->demoPay($buyer, $eastParent, "east-pickup-$tag", $eastQuote['total']);
+$app->savePickupLocation($north, $eastPickup, 0, 'EAST', '东区自提门店', '东区 16 号', false);
+denied(fn() => $app->quote($buyer, [$multiSku => 1], 'store', '', pickupLocations: $eastLocations), 'closed location cannot take a new quote');
+same('东区 12 号', $app->merchantPickupQueue($eastStaff)[0]['location_address'], 'paid order retains its address snapshot');
+same(false, in_array($eastOrder, array_column($app->merchantPickupQueue($pickupStaff), 'id'), true),
+    'store staff queue excludes another location of the same merchant');
+denied(fn() => $app->preparePickup($pickupStaff, $eastOrder, $eastPickup), 'another location cannot prepare the order');
+$app->preparePickup($eastStaff, $eastOrder, $eastPickup);
+$eastCode = $app->issuePickupCode($buyer, $eastOrder);
+same(hash('sha256', $eastCode), $app->rows('SELECT code_digest FROM order_pickups WHERE merchant_order_id=?', [$eastOrder])[0]['code_digest'],
+    'database stores a digest rather than the redeemable code');
+denied(fn() => $app->redeemPickup($pickupStaff, $eastOrder, $northPickup, $eastCode), 'another location cannot claim a valid code');
+$competing = [$eastStaff, $eastOrder, $eastPickup, $eastCode];
+same(['already-redeemed', 'redeemed'], compete('pickup-worker', [$competing, $competing]), 'simultaneous scans redeem only once');
+same(1, count($app->rows("SELECT id FROM ledger WHERE merchant_order_id=? AND kind='sale'", [$eastOrder])),
+    'simultaneous scans produce one sale');
+same(1, count($app->rows("SELECT id FROM audit_log WHERE entity_id=? AND action='pickup.redeemed'", [$eastOrder])),
+    'simultaneous scans record one successful audit event');
+same([[$main, 0, 0], [$east, 1, 0]], $multiBalance(), 'pickup completion leaves the paid warehouse balance unchanged');
+
 $raceRelease = $app->submitSku($north, 0, "R-$tag", '最后一件', 200, 1, $home, '并发用例', '', '', true, true);
 $race = $app->reviewSku($admin, $raceRelease, true);
-$q1 = $app->quote($buyer, [$race => 1], 'store', 'Store A');
-$q2 = $app->quote($otherBuyer, [$race => 1], 'store', 'Store A');
-$workers = [];
-foreach ([[$buyer, $q1['token']], [$otherBuyer, $q2['token']]] as [$actor, $token]) {
-    $command = [PHP_BINARY];
-    if (PHP_OS_FAMILY === 'Windows') {
-        array_push($command, '-d', 'extension=pdo_mysql');
-    }
-    array_push($command, __FILE__, 'race-worker', (string) $actor, $token);
-    $process = proc_open($command, [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
-    if (!is_resource($process) || trim((string) fgets($pipes[1])) !== 'ready') {
-        throw new RuntimeException('Race worker failed to start.');
-    }
-    $workers[] = [$process, $pipes];
-}
-foreach ($workers as [, $pipes]) {
-    fwrite($pipes[0], "go\n");
-    fclose($pipes[0]);
-}
-$outcomes = [];
-foreach ($workers as [$process, $pipes]) {
-    $outcomes[] = trim(stream_get_contents($pipes[1]));
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    same(0, proc_close($process), 'worker exit: ' . $stderr);
-}
-sort($outcomes);
+$q1 = $app->quote($buyer, [$race => 1], 'store', '', pickupLocations: $northLocations);
+$q2 = $app->quote($otherBuyer, [$race => 1], 'store', '', pickupLocations: $northLocations);
+$outcomes = compete('race-worker', [[$buyer, $q1['token']], [$otherBuyer, $q2['token']]]);
 same(['placed', 'unavailable'], $outcomes, 'simultaneous checkout never oversells');
 $holdingOrder = $app->rows('SELECT o.id,o.buyer_id FROM orders o JOIN merchant_orders m ON m.order_id=o.id
     JOIN order_items i ON i.merchant_order_id=m.id WHERE i.product_id=?', [$race])[0];
@@ -396,21 +473,21 @@ same(true, $app->expireOrders() >= 1, 'expiry worker processed order');
 same(0, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$race])[0]['reserved'], 'expired stock released');
 same(false, $app->cancel($expired), 'expiry replay is a no-op');
 
-$stale = $app->quote($buyer, [$b => 1], 'store', 'Store A');
+$stale = $app->quote($buyer, [$b => 1], 'store', '', pickupLocations: $pondLocations);
 $cupUpdate = $app->submitSku($pond, $b, "P-$tag", '池畔早餐杯', 8100, 0, $home, '池畔陶瓷', '湖蓝', '300ml', true, true, $cupRelease);
 same(8000, (int) $app->catalog("P-$tag")[0]['price'], 'pending price does not overwrite the current release');
 denied(fn() => $app->submitSku($pond, $b, "P-$tag", '旧页面', 1, 0, $home, '池畔陶瓷', '湖蓝', '300ml', true, true, $cupRelease),
     'stale edit cannot overwrite a newer request');
 $app->reviewSku($admin, $cupUpdate, true);
 denied(fn() => $app->place($buyer, $stale['token']), 'price changes invalidate quote');
-$redQuote = $app->quote($buyer, [$a => 1], 'store', 'Store A');
+$redQuote = $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: $northLocations);
 $redUpdate = $app->submitSku($north, $a, "N-$tag", '北仓帆布包', 12000, 0, $bags, '北仓帆布包', '朱红', 'M', true, true, $redRelease,
     memberPrice: 10000);
 $app->reviewSku($admin, $redUpdate, true);
 denied(fn() => $app->place($buyer, $redQuote['token']), 'same-price variant revision invalidates quote');
 same('红色', $app->rows('SELECT r.color FROM order_items i JOIN product_releases r ON r.id=i.product_release_id WHERE i.id=?', [$aItem])[0]['color'],
     'historical line retains the original approved attributes');
-$newQuote = $app->quote($buyer, [$b => 1], 'store', 'Store A');
+$newQuote = $app->quote($buyer, [$b => 1], 'store', '', pickupLocations: $pondLocations);
 $newOrder = $app->place($buyer, $newQuote['token']);
 denied(fn() => $app->demoPay($buyer, $newOrder, "pay-$tag", 8100), 'gateway reference unique across orders');
 same(true, $app->cancel($newOrder, $buyer), 'buyer can release an unpaid order');
@@ -420,7 +497,7 @@ $receipt = static function (string $token, string $reference, int $amount, strin
     $digest = hash('sha256', json_encode([$token, $reference, $amount, $currency], JSON_THROW_ON_ERROR));
     return $app->recordSandboxReceipt($token, $reference, $currency, $amount, $digest);
 };
-$resaleQuote = $app->quote($otherBuyer, [$race => 1], 'store', 'Store A');
+$resaleQuote = $app->quote($otherBuyer, [$race => 1], 'store', '', pickupLocations: $northLocations);
 $resaleOrder = $app->place($otherBuyer, $resaleQuote['token']);
 $wrongReceipt = $receipt($intent($resaleOrder), "currency-$tag", 200, 'USD');
 same('needs_review', $wrongReceipt['status'], 'currency discrepancy requires review');
@@ -446,7 +523,7 @@ $app->recordSandboxRefund($finance, $late['receipt_id'], "refund-$tag");
 same('refunded', $receipt($intent($expired), "late-$tag", 200)['status'], 'late capture replay reports current refund progress');
 denied(fn() => $app->recordSandboxRefund($finance, $duplicate['receipt_id'], "refund-$tag"), 'refund reference cannot resolve two receipts');
 
-$unprocessed = $app->place($buyer, $app->quote($buyer, [$b => 1], 'store', 'Store A')['token']);
+$unprocessed = $app->place($buyer, $app->quote($buyer, [$b => 1], 'store', '', pickupLocations: $pondLocations)['token']);
 $db->prepare('UPDATE orders SET expires_at=UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id=?')->execute([$unprocessed]);
 same('refund_required', $receipt($intent($unprocessed), "expires-before-worker-$tag", 8100)['status'],
     'late receipt before worker recorded for refund');

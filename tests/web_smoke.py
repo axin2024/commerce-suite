@@ -50,6 +50,16 @@ def extract(html, name):
     return match.group(1)
 
 
+def forms(html, action):
+    return [form for form in re.findall(r"<form [^>]*>.*?</form>", html, flags=re.S)
+            if f'name="action" value="{action}"' in form]
+
+
+def pickup_choices(cart):
+    selections = re.findall(r'<select name="(pickup_locations\[\d+\])">(.*?)</select>', cart, flags=re.S)
+    return {field: re.search(r'<option value="(\d+)"', options)[1] for field, options in selections}
+
+
 def webhook(payload, timestamp=None, signature=None, endpoint="payment-webhook.php", secret=SANDBOX_SECRET):
     body = json.dumps(payload, separators=(",", ":")).encode()
     timestamp = str(int(time.time()) if timestamp is None else timestamp)
@@ -95,14 +105,15 @@ device_cart = second_device.load("/?page=cart")
 assert "山形帆布托特包" in device_cart and "湖蓝陶瓷早餐杯" in device_cart
 second_device.submit("/?page=cart", "cart", product=part_a, quantity=1,
                      revision=extract(device_cart, "revision"))
-partial = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点")
+partial = buyer.submit("/?page=cart", "quote", channel="store", **pickup_choices(buyer.load("/?page=cart")))
 assert "¥80.00" in partial
 second_device.submit(catalog_a, "cart", product=part_a, quantity=1)
 stale = buyer.submit("/?page=cart", "place", token=extract(partial, "token"))
 assert "购物车内容已变化" in stale
-bad = buyer.submit("/?page=cart", "quote", csrf="invalid", channel="store", destination="测试自提点")
+bad = buyer.submit("/?page=cart", "quote", csrf="invalid", channel="store")
 assert "表单已失效" in bad
-quote = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点", coupon=coupon)
+quote = buyer.submit("/?page=cart", "quote", channel="store", coupon=coupon,
+                     **pickup_choices(buyer.load("/?page=cart")))
 assert "¥180.00" in quote
 order = buyer.submit("/?page=cart", "place", token=extract(quote, "token"))
 order_id = extract(order, "order")
@@ -129,12 +140,37 @@ else:
     paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
 assert "已付款" in paid and "¥108.00" in paid and "¥72.00" in paid
 assert "已使用" in buyer.load("/?page=account")
-for merchant in (north, pond):
+assert "生成提货码" not in paid and paid.count("待备货") == 2
+for merchant, location_name in ((north, "北仓河畔店"), (pond, "池畔工房集市店")):
     merchant_page = merchant.load("/?page=merchant")
-    assert "测试自提点" in merchant_page
-    fulfilled = merchant.submit("/?page=merchant", "fulfill",
-                                merchant_order=extract(merchant_page, "merchant_order"), tracking="SMOKE-01")
+    assert location_name in merchant_page
+    prepare_form, = forms(merchant_page, "pickup_prepare")
+    merchant_order = extract(prepare_form, "merchant_order")
+    location = extract(prepare_form, "pickup_location")
+    scanner = merchant
+    if merchant is north:
+        scanner_address = f"scanner-{uuid4().hex[:8]}@example.test"
+        merchant.submit("/?page=merchant", "shop_member", email=scanner_address, password="PickupFixture-2026",
+                        position="pickup", pickup_location=location)
+        scanner = Session()
+        scanner.submit("/?page=account", "login", email=scanner_address, password="PickupFixture-2026")
+        scanner_page = scanner.load("/?page=merchant")
+        assert "备货完成" in scanner_page and "商品与库存" not in scanner_page and "本店账单" not in scanner_page
+    prepared = scanner.submit("/?page=merchant", "pickup_prepare", merchant_order=merchant_order, pickup_location=location)
+    assert "待提货" in prepared
+    pass_page = buyer.submit("/?page=orders", "pickup_issue", merchant_order=merchant_order)
+    pickup_code = re.search(r"提货码 <code>([A-F0-9]{16})</code>", pass_page)[1]
+    assert 'class="pickup-barcode"' in pass_page and pass_page.count('class="bar') == 90
+    scanner_page = scanner.load(f"/?page=merchant&pickup_order={merchant_order}")
+    scanned_form, = forms(scanner_page, "pickup_redeem")
+    scan_csrf = extract(scanned_form, "csrf")
+    assert pickup_code not in buyer.load("/?page=orders") and pickup_code not in scanner_page
+    fulfilled = scanner.submit("/?page=merchant", "pickup_redeem", merchant_order=merchant_order, csrf=scan_csrf,
+                               pickup_location=location, code=pickup_code)
     assert "已履约" in fulfilled
+    duplicate_scan = scanner.submit("/?page=merchant", "pickup_redeem", merchant_order=merchant_order, csrf=scan_csrf,
+                                    pickup_location=location, code=pickup_code)
+    assert "该提货码已核销" in duplicate_scan
 
 order = buyer.load("/?page=orders")
 refund = buyer.submit("/?page=orders", "refund", item=extract(order, "item"),
@@ -147,7 +183,7 @@ assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80"
 assert "生成结算批次" in settlement
 shop_id = extract(settlement, "shop")
 finance.submit("/?page=platform", "settle", shop=shop_id)
-print("Web flow passed: login, role isolation, CSRF, shared cart, quote revisions, checkout, payment, fulfillment, refund, and settlement.")
+print("Web flow passed: login, shared cart, checkout, signed payment, store pickup, repeat scan, refund, and settlement.")
 
 suffix = uuid4().hex[:8]
 shop_name = f"入驻测试 {suffix}"
@@ -203,7 +239,11 @@ store_listing = buyer.load(listing + "&channel=store")
 assert "红色 · M" in store_listing and "¥129.90" in store_listing
 variant_product = extract(store_listing, "product")
 buyer.submit(listing, "cart", product=variant_product, quantity=1)
-variant_quote = buyer.submit("/?page=cart", "quote", channel="store", destination="商品验收自提点")
+location_form, = forms(owner.load("/?page=merchant"), "pickup_location_save")
+location_warehouse = re.search(r'<option value="(\d+)">主仓</option>', location_form)[1]
+owner.submit("/?page=merchant", "pickup_location_save", pickup_location=0, warehouse=location_warehouse,
+             code="STORE", name="商品验收自提点", address="演示园区 3 号", enabled=1)
+variant_quote = buyer.submit("/?page=cart", "quote", channel="store", **pickup_choices(buyer.load("/?page=cart")))
 owner.submit("/?page=merchant", "sku_unlist", product=variant_product)
 blocked = buyer.submit("/?page=cart", "place", token=extract(variant_quote, "token"))
 assert "商品已下架" in blocked
@@ -219,9 +259,8 @@ if SHIPPING_SECRET:
     admin.submit("/?page=platform", "sku_review", release=extract(admin.load("/?page=platform"), "release"), decision="approve")
     delivery_listing = f"/?q={delivery_sku}&channel=web"
     delivery_product = extract(buyer.load(delivery_listing), "product")
-    stock_forms = re.findall(r"<form [^>]*>.*?</form>", owner.load("/?page=merchant"), flags=re.S)
-    stock_form, = (form for form in stock_forms if 'name="action" value="sku_stock"' in form
-                   and warehouse_name in form and extract(form, "product") == delivery_product)
+    stock_form, = (form for form in forms(owner.load("/?page=merchant"), "sku_stock")
+                   if warehouse_name in form and extract(form, "product") == delivery_product)
     owner.submit("/?page=merchant", "sku_stock", product=delivery_product, stock=2, csrf=extract(stock_form, "csrf"),
                  version=extract(stock_form, "version"), warehouse=extract(stock_form, "warehouse"))
     buyer.submit("/?page=cart", "cart", product=variant_product, remove=1)
@@ -231,8 +270,7 @@ if SHIPPING_SECRET:
     open_order = buyer.submit("/?page=cart", "place", token=extract(split, "token"))
     buyer.submit("/?page=orders", "pay", order=extract(open_order, "order"), amount=5200)
     ready = owner.load("/?page=merchant")
-    parcel_forms = [form for form in re.findall(r"<form [^>]*>.*?</form>", ready, flags=re.S)
-                    if 'name="action" value="shipment_dispatch"' in form]
+    parcel_forms = forms(ready, "shipment_dispatch")
     assert len(parcel_forms) == 2
 
     def dispatch(form, tracking):
