@@ -160,6 +160,7 @@ else:
     paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
 assert "已付款" in paid and "¥108.00" in paid and "¥72.00" in paid
 assert "已使用" in buyer.load("/?page=account")
+assert "全单退完返还未过期券" in buyer.load("/?page=account")
 assert "生成提货码" not in paid and paid.count("待备货") == 2
 for merchant, location_name in ((north, "北仓河畔店"), (pond, "池畔工房集市店")):
     merchant_page = merchant.load("/?page=merchant")
@@ -226,6 +227,7 @@ if REFUND_SECRET:
     expected_refund = (200, {"refund_id": int(refund_id), "status": "refunded"})
     assert return_webhook(refund_payload) == return_webhook(refund_payload) == expected_refund
     assert refund_payload["reference"] in buyer.load("/?page=orders")
+    assert "优惠券已返还" not in buyer.load("/?page=orders") and "已使用" in buyer.load("/?page=account")
     settlement = finance.load("/?page=platform")
     assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80" in settlement
     month = datetime.now(timezone.utc).strftime("%Y-%m")
@@ -493,3 +495,31 @@ assert "预售 SPRING" in ready and "已到货" in ready
 assert "已完成提货核销" in owner.submit("/?page=merchant", "pickup_redeem", merchant_order=pre_child,
                                    pickup_location=pre_location, code=pickup_code)
 print("Preorder web flow passed: publish, cart, payment, cutoff, warehouse receipt, and store pickup.")
+
+if REFUND_SECRET:
+    revised_campaign = admin.submit("/?page=platform", "promotion_publish", code="marketplace-opening",
+                                    name="跨店券新版验收", threshold="200.00", discount="19.00",
+                                    requires_claim=1, stack_member_price=1)
+    assert "跨店券新版验收" in revised_campaign
+    article = buyer.load("/?page=orders").split(f"<h2>订单 #{order_id} ", 1)[1].split("</article>", 1)[0]
+    last_refund_form, = forms(article, "refund")
+    buyer.submit("/?page=orders", "refund", item=extract(last_refund_form, "item"), key=extract(last_refund_form, "key"),
+                 quantity=1, reason="完整退回跨店订单")
+    approve_last, = forms(pond.load("/?page=merchant"), "return_approve")
+    last_refund = extract(approve_last, "refund")
+    pond_main = re.search(r'<option value="(\d+)">主仓', approve_last)[1]
+    pond.submit("/?page=merchant", "return_approve", refund=last_refund, warehouse=pond_main, address="池畔退货窗口")
+    buyer.submit("/?page=orders", "return_dispatch", refund=last_refund, carrier="demo", tracking=f"coupon-return-{suffix}")
+    pond.submit("/?page=merchant", "return_inspect", refund=last_refund, accepted=1, restocked=1)
+    coupon_receipts = finance.load(f"/?page=platform&return_receipt={last_refund}")
+    last_payload = {
+        "refund_token": re.search(r'<code class="return-token">([a-f0-9]{32})</code>', coupon_receipts)[1],
+        "payment_reference": re.search(r'<code class="return-payment">([^<]+)</code>', coupon_receipts)[1],
+        "reference": f"coupon-restored-{suffix}", "amount": 7200, "currency": "CNY",
+    }
+    expected_last = (200, {"refund_id": int(last_refund), "status": "refunded"})
+    assert return_webhook(last_payload) == return_webhook(last_payload) == expected_last
+    assert buyer.load("/?page=orders").count("优惠券已返还") == 1
+    account = buyer.load("/?page=account")
+    assert "跨店满 200 减 20" in account and ">可用</span>" in account and "跨店券新版验收" not in account
+    print("Coupon refund web flow passed: partial refund hold, revised campaign, final receipt, and original coupon restored.")

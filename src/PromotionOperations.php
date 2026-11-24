@@ -25,7 +25,7 @@ trait PromotionOperations
 
     public function publishPromotion(
         int $admin, string $code, string $name, int $threshold, int $discount,
-        bool $requiresClaim, bool $stackMemberPrice, ?int $category = null, string $end = '',
+        bool $requiresClaim, bool $stackMemberPrice, ?int $category = null, string $end = '', bool $refundCoupon = false,
     ): int {
         $this->actor($admin, 'admin');
         $code = trim($code);
@@ -36,22 +36,25 @@ trait PromotionOperations
             || $discount > 100_000_000 || $discount > $threshold) {
             throw new RuleViolation('请检查活动编号、名称、门槛和减免金额。');
         }
+        if ($refundCoupon && !$requiresClaim) {
+            throw new RuleViolation('仅领券活动可设置全单退款退券。');
+        }
         $lastMinute = $end === '' ? null : DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $end, new DateTimeZone('UTC'));
         if ($end !== '' && (!$lastMinute || $lastMinute->format('Y-m-d\TH:i') !== $end || $lastMinute->getTimestamp() <= time())) {
             throw new RuleViolation('结束时间须为未来的 UTC 日期和时间。');
         }
         $endsAt = $lastMinute?->format('Y-m-d H:i:s');
         return $this->transaction(function () use ($admin, $code, $name, $threshold, $discount,
-            $requiresClaim, $stackMemberPrice, $category, $endsAt): int {
+            $requiresClaim, $stackMemberPrice, $category, $endsAt, $refundCoupon): int {
             if ($category !== null && !$this->one('SELECT id FROM product_categories WHERE id=?', [$category])) {
                 throw new RuleViolation('活动分类不存在。');
             }
             $this->query('INSERT INTO promotions (code) VALUES (?) ON DUPLICATE KEY UPDATE code=code', [$code]);
             $promotion = $this->one('SELECT id FROM promotions WHERE code=? FOR UPDATE', [$code]);
             $id = $this->insert('INSERT INTO promotion_revisions
-                (promotion_id,name,category_id,threshold,discount,requires_claim,stack_member_price,ends_at,published_by)
-                VALUES (?,?,?,?,?,?,?,?,?)', [$promotion['id'], $name, $category, $threshold, $discount,
-                    (int) $requiresClaim, (int) $stackMemberPrice, $endsAt, $admin]);
+                (promotion_id,name,category_id,threshold,discount,requires_claim,stack_member_price,ends_at,published_by,refund_coupon)
+                VALUES (?,?,?,?,?,?,?,?,?,?)', [$promotion['id'], $name, $category, $threshold, $discount,
+                    (int) $requiresClaim, (int) $stackMemberPrice, $endsAt, $admin, (int) $refundCoupon]);
             $this->query('UPDATE promotions SET current_revision_id=? WHERE id=?', [$id, $promotion['id']]);
             $this->audit($admin, 'promotion.published', (int) $promotion['id'], ['revision_id' => $id]);
             return $id;
@@ -106,11 +109,33 @@ trait PromotionOperations
     public function buyerCoupons(int $buyer): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->rows("SELECT p.id,r.name,r.discount,r.threshold,r.ends_at,r.stack_member_price,
+        return $this->rows("SELECT p.id,r.name,r.discount,r.threshold,r.ends_at,r.stack_member_price,r.refund_coupon,
             CASE WHEN c.redeemed_at IS NOT NULL THEN 'used' WHEN c.order_id IS NOT NULL THEN 'held'
                  WHEN p.enabled=0 OR r.ends_at<=UTC_TIMESTAMP() THEN 'unavailable' ELSE 'available' END AS status
             FROM coupon_claims c JOIN promotions p ON p.id=c.promotion_id JOIN promotion_revisions r ON r.id=c.revision_id
             WHERE c.buyer_id=? ORDER BY c.claimed_at DESC,p.id DESC", [$buyer]);
+    }
+
+    // Called after the parent order has been locked and the confirmed quantity applied.
+    private function restoreRefundedCoupon(int $order, int $refund): void
+    {
+        $revision = $this->one('SELECT r.id FROM orders o JOIN promotion_revisions r ON r.id=o.promotion_revision_id
+            WHERE o.id=? AND r.refund_coupon=1 AND (r.ends_at IS NULL OR r.ends_at>UTC_TIMESTAMP())', [$order]);
+        if (!$revision) {
+            return;
+        }
+        $remaining = $this->one('SELECT i.id FROM merchant_orders m JOIN order_items i ON i.merchant_order_id=m.id
+            WHERE m.order_id=? AND i.refunded_quantity<i.quantity LIMIT 1 FOR UPDATE OF i', [$order]);
+        if ($remaining) {
+            return;
+        }
+        $released = $this->query('UPDATE coupon_claims SET order_id=NULL,redeemed_at=NULL
+            WHERE order_id=? AND revision_id=? AND redeemed_at IS NOT NULL', [$order, $revision['id']]);
+        if ($released->rowCount() === 1) {
+            $this->query('INSERT INTO coupon_refund_restorations (order_id,refund_id,revision_id) VALUES (?,?,?)',
+                [$order, $refund, $revision['id']]);
+            $this->audit(null, 'promotion.coupon_restored', $order, ['revision_id' => (int) $revision['id'], 'refund_id' => $refund]);
+        }
     }
 
     private function pricePromotion(int $buyer, array $items, ?int $coupon, bool $lock): array

@@ -303,7 +303,8 @@ try {
                 case 'promotion_publish':
                     $category = input('category') === '' ? null : number('category');
                     $app->publishPromotion($id, input('code'), input('name'), cents('threshold'), cents('discount'),
-                        input('requires_claim') === '1', input('stack_member_price') === '1', $category, input('ends_at'));
+                        input('requires_claim') === '1', input('stack_member_price') === '1', $category, input('ends_at'),
+                        input('refund_coupon') === '1');
                     break;
                 case 'promotion_access':
                     $enabled = input('enabled');

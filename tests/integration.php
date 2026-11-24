@@ -35,7 +35,8 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
-if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker', 'freight-worker'], true)) {
+if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker', 'freight-worker',
+    'refund-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
@@ -51,6 +52,9 @@ if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settl
         } elseif ($worker === 'freight-worker') {
             $app->decideReturnFreight((int) $argv[2], (int) $argv[3], (int) $argv[4], '原运费退款');
             echo "saved\n";
+        } elseif ($worker === 'refund-worker') {
+            $app->recordReturnReceipt($argv[2], $argv[3], $argv[4], 'CNY', (int) $argv[5]);
+            echo "refunded\n";
         } elseif ($argv[2] === 'receive') {
             $app->receivePreorder((int) $argv[3], (int) $argv[4], (int) $argv[5]);
             echo "received\n";
@@ -375,7 +379,9 @@ $memberQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', pickup
 same(18000, $memberQuote['total'], 'member prices are applied before automatic campaign threshold');
 same(2000, $memberQuote['member_savings'], 'member saving recorded');
 same(0, $memberQuote['discount'], 'automatic campaign does not apply below its member-price threshold');
-$couponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店不叠加券', 20000, 2000, true, false);
+denied(fn() => $app->publishPromotion($admin, "auto-$tag", '自动折扣', 20000, 2000, false, false, refundCoupon: true),
+    'automatic discounts cannot be restored as a coupon');
+$couponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店不叠加券', 20000, 2000, true, false, refundCoupon: true);
 $campaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$couponVersion])[0]['promotion_id'];
 same(true, $app->claimCoupon($memberBuyer, $campaign), 'coupon claimed once');
 same(false, $app->claimCoupon($memberBuyer, $campaign), 'second coupon claim already received');
@@ -413,7 +419,7 @@ $app->demoPay($memberBuyer, $paidCouponOrder, "coupon-pay-$tag", 18000);
 same('used', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'payment consumes coupon');
 same($couponVersion, (int) $app->rows('SELECT promotion_revision_id FROM orders WHERE id=?', [$paidCouponOrder])[0]['promotion_revision_id'],
     'order freezes the issued promotions revision');
-$freeVersion = $app->publishPromotion($admin, "free-$tag", '全额优惠验收', 20000, 20000, true, false);
+$freeVersion = $app->publishPromotion($admin, "free-$tag", '全额优惠验收', 20000, 20000, true, false, refundCoupon: true);
 $freeCampaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$freeVersion])[0]['promotion_id'];
 $app->claimCoupon($buyer, $freeCampaign);
 $zero = $app->quote($buyer, [$a => 1, $b => 1], 'store', '', $freeCampaign, $bothLocations);
@@ -920,6 +926,77 @@ same(['saved', 'unavailable'], compete('freight-worker', [[$supportStaff, $freig
     [$finance, $freightClaims[1], 800]]), 'competing decisions on different lines share one order-wide ceiling');
 same(800, (int) $returnDetails($freightClaims[0])['freight_amount'] + (int) $returnDetails($freightClaims[1])['freight_amount'],
     'the combined hold equals the original freight after the race');
+
+$prepareCouponReturns = static function (int $orderId, int $customer) use ($app): array {
+    $payment = $app->rows('SELECT reference FROM payments WHERE order_id=?', [$orderId])[0]['reference'];
+    $parts = $app->rows("SELECT m.id,i.id AS item,i.quantity,p.pickup_location_id,s.user_id AS owner_id,
+        l.warehouse_id FROM merchant_orders m JOIN shop_members s ON s.shop_id=m.shop_id AND s.position='owner'
+        JOIN order_items i ON i.merchant_order_id=m.id
+        JOIN order_pickups p ON p.merchant_order_id=m.id JOIN pickup_locations l ON l.id=p.pickup_location_id
+        WHERE m.order_id=? ORDER BY m.id", [$orderId]);
+    $receipts = [];
+    foreach ($parts as $part) {
+        $owner = (int) $part['owner_id'];
+        $child = (int) $part['id'];
+        $location = (int) $part['pickup_location_id'];
+        $units = (int) $part['quantity'];
+        $app->preparePickup($owner, $child, $location);
+        $app->redeemPickup($owner, $child, $location, $app->issuePickupCode($customer, $child));
+        $claim = $app->requestRefund($customer, (int) $part['item'], $units, '验收原券返还', bin2hex(random_bytes(16)));
+        $app->reviewReturn($owner, $claim, (int) $part['warehouse_id'], '示例退货地址', '');
+        $app->dispatchReturn($customer, $claim, 'demo', "coupon-return-$claim");
+        $app->inspectReturn($owner, $claim, $units, $units, '');
+        $case = $app->rows('SELECT refund_token,amount FROM refunds WHERE id=?', [$claim])[0];
+        $receipts[] = [$case['refund_token'], "coupon-receipt-$claim", $payment, (int) $case['amount']];
+    }
+    return $receipts;
+};
+$confirmCouponReturn = static fn(array $receipt): array =>
+    $app->recordReturnReceipt($receipt[0], $receipt[1], $receipt[2], 'CNY', $receipt[3]);
+$couponState = static fn(int $customer, int $promotion): string => array_column($app->buyerCoupons($customer), 'status', 'id')[$promotion];
+$restorations = static fn(int $orderId): array => array_map('intval', array_column(
+    $app->rows('SELECT revision_id FROM coupon_refund_restorations WHERE order_id=?', [$orderId]), 'revision_id'));
+
+[$couponFirst, $couponLast] = $prepareCouponReturns($paidCouponOrder, $memberBuyer);
+$confirmCouponReturn($couponFirst);
+same('used', $couponState($memberBuyer, $campaign), 'confirming the refund for one merchant does not release the coupon');
+same([], $restorations($paidCouponOrder), 'waiting for another merchant receipt leaves no restoration');
+$app->setPromotionEnabled($admin, $campaign, false);
+$confirmCouponReturn($couponLast);
+same('unavailable', $couponState($memberBuyer, $campaign), 'original coupon is restored while campaign is suspended');
+same([$couponVersion], $restorations($paidCouponOrder), 'full refund restores the original version despite the replacement policy');
+$app->setPromotionEnabled($admin, $campaign, true);
+$repeatQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
+same([$couponVersion, 2000], [$repeatQuote['promotion']['revision_id'], $repeatQuote['discount']],
+    'restored coupon uses its original terms at checkout');
+$repeatOrder = $app->place($memberBuyer, $repeatQuote['token']);
+$app->demoPay($memberBuyer, $repeatOrder, "coupon-repeat-$tag", $repeatQuote['total']);
+$confirmCouponReturn($couponLast);
+same('used', $couponState($memberBuyer, $campaign), 'replayed old refund leaves the new redemption intact');
+same([$couponVersion], $restorations($paidCouponOrder), 'old redemption keeps one immutable restoration');
+
+$raceReturns = $prepareCouponReturns($zeroOrder, $buyer);
+same([0, 0], array_column($raceReturns, 3), 'zero-cash order still requires both goods to be returned');
+same(['refunded', 'refunded'], compete('refund-worker', $raceReturns), 'simultaneous receipts across two shops both post');
+same([$freeVersion], $restorations($zeroOrder), 'concurrent final refunds restore the coupon once');
+same('available', $couponState($buyer, $freeCampaign), 'zero-cash full return can restore the coupon');
+
+$expired = $db->prepare('UPDATE promotion_revisions SET ends_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=?');
+$expired->execute([$couponVersion]);
+foreach ($prepareCouponReturns($repeatOrder, $memberBuyer) as $couponReceipt) {
+    $confirmCouponReturn($couponReceipt);
+}
+same([], $restorations($repeatOrder), 'expired issued version is not extended by refund');
+same('used', $couponState($memberBuyer, $campaign), 'expired coupon retains its redeemed status');
+
+$keepQuote = $app->quote($otherBuyer, [$a => 1, $b => 1], 'store', '', $campaign, $bothLocations);
+$keepOrder = $app->place($otherBuyer, $keepQuote['token']);
+$app->demoPay($otherBuyer, $keepOrder, "coupon-keep-$tag", $keepQuote['total']);
+foreach ($prepareCouponReturns($keepOrder, $otherBuyer) as $couponReceipt) {
+    $confirmCouponReturn($couponReceipt);
+}
+same([], $restorations($keepOrder), 'a version that opts out keeps its redemption after a full refund');
+same('used', $couponState($otherBuyer, $campaign), 'newer campaign may retain redemptions while the original version restores');
 
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');

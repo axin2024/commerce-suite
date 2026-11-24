@@ -1,6 +1,6 @@
 <?php
 $campaigns = $app->rows('SELECT p.id,p.code,p.enabled,r.id AS revision,r.name,r.threshold,r.discount,r.requires_claim,
-    r.stack_member_price,r.ends_at,c.name AS category_name
+    r.stack_member_price,r.refund_coupon,r.ends_at,c.name AS category_name
     FROM promotions p JOIN promotion_revisions r ON r.id=p.current_revision_id
     LEFT JOIN product_categories c ON c.id=r.category_id ORDER BY p.id DESC LIMIT 100');
 $categories = $app->categories();
@@ -31,6 +31,7 @@ $categories = $app->categories();
         <div class="inline">
             <label class="inline"><input name="requires_claim" type="checkbox" value="1" checked>需要先领取优惠券</label>
             <label class="inline"><input name="stack_member_price" type="checkbox" value="1" checked>允许叠加会员价</label>
+            <label class="inline"><input name="refund_coupon" type="checkbox" value="1">全单退完返还未过期优惠券</label>
         </div>
         <p class="muted">使用已有编号发布新版本，已发券仍按领取时的条款使用，停用活动会暂停领券及结账使用。</p>
         <button>发布活动</button></form>
@@ -42,6 +43,7 @@ $categories = $app->categories();
                     · 满 <?= cash($campaign['threshold']) ?> 减 <?= cash($campaign['discount']) ?></p>
                 <p class="muted"><?= $campaign['requires_claim'] ? '领券使用' : '自动匹配' ?>
                     · <?= $campaign['stack_member_price'] ? '可叠加会员价' : '活动行按标价' ?>
+                    <?= $campaign['refund_coupon'] ? ' · 全单退完返券' : '' ?>
                     <?= $campaign['ends_at'] ? ' · ' . e($campaign['ends_at']) . ' UTC 截止' : '' ?></p></div>
             <?php form('promotion_access'); echo field('promotion', $campaign['id']), field('enabled', $campaign['enabled'] ? 0 : 1); ?>
             <button class="secondary"><?= $campaign['enabled'] ? '停用活动' : '启用活动' ?></button></form>

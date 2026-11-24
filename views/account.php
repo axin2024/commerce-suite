@@ -17,7 +17,8 @@
                 <div class="record">
                     <div><strong><?= e($coupon['name']) ?></strong>
                         <p class="muted">满 <?= cash($coupon['threshold']) ?> 减 <?= cash($coupon['discount']) ?>
-                            <?= $coupon['ends_at'] ? ' · 截至 ' . e($coupon['ends_at']) . ' UTC' : '' ?></p></div>
+                            <?= $coupon['ends_at'] ? ' · 截至 ' . e($coupon['ends_at']) . ' UTC' : '' ?>
+                            <?= $coupon['refund_coupon'] ? ' · 全单退完返还未过期券' : '' ?></p></div>
                     <span><?= e($states[$coupon['status']]) ?></span>
                 </div>
             <?php endforeach; ?>

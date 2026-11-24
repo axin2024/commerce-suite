@@ -1,7 +1,8 @@
 <?php
 $newPickupCode = $_SESSION['pickup_code'] ?? null;
 unset($_SESSION['pickup_code']);
-$orders = $app->rows('SELECT o.*,r.name AS promotion_name FROM orders o LEFT JOIN promotion_revisions r ON r.id=o.promotion_revision_id
+$orders = $app->rows('SELECT o.*,r.name AS promotion_name,c.restored_at AS coupon_restored_at FROM orders o
+    LEFT JOIN promotion_revisions r ON r.id=o.promotion_revision_id LEFT JOIN coupon_refund_restorations c ON c.order_id=o.id
     WHERE o.buyer_id=? ORDER BY o.id DESC LIMIT 50', [$id]);
 $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.id=r.item_id
     WHERE r.buyer_id=? ORDER BY r.id DESC LIMIT 50', [$id]);
@@ -18,6 +19,9 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
             · <?= e($order['created_at']) ?> UTC</p>
         <?php if ($order['promotion_name']): ?>
             <p class="muted"><?= e($order['promotion_name']) ?> · 优惠 <?= cash($order['discount']) ?></p>
+        <?php endif; ?>
+        <?php if ($order['coupon_restored_at']): ?>
+            <p>优惠券已返还 · <?= e($order['coupon_restored_at']) ?> UTC <a href="/?page=account#coupons">查看优惠券</a></p>
         <?php endif; ?>
         <?php if (sandboxWebhookSecret() !== null): ?>
             <p class="muted">沙箱支付意图 <code><?= e($order['payment_token']) ?></code></p>

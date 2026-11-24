@@ -218,14 +218,15 @@ trait ReturnOperations
         }
         try {
             return $this->transaction(function () use ($token, $reference, $payment, $currency, $amount): array {
-                $identity = $this->one('SELECT r.id,m.shop_id,p.reference FROM refunds r JOIN order_items i ON i.id=r.item_id
+                $identity = $this->one('SELECT r.id,m.shop_id,m.order_id,p.reference FROM refunds r JOIN order_items i ON i.id=r.item_id
                     JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN payments p ON p.order_id=m.order_id
                     WHERE r.refund_token=?', [$token]);
                 if (!$identity || $identity['reference'] !== $payment || $currency !== 'CNY') {
                     throw new RuleViolation('未找到匹配的原支付流水。');
                 }
                 $id = (int) $identity['id'];
-                $refund = $this->lockReturn($id, (int) $identity['shop_id']);
+                $order = (int) $identity['order_id'];
+                $refund = $this->lockReturn($id, (int) $identity['shop_id'], $order);
                 if ((int) $refund['amount'] !== $amount || ($refund['status'] !== 'refund_pending'
                     && ($refund['status'] !== 'refunded' || $refund['refund_reference'] !== $reference))) {
                     throw new RuleViolation('退款回执与申请金额或流水不符。');
@@ -242,6 +243,7 @@ trait ReturnOperations
                         $credit,
                     ]);
                     $this->audit(null, 'refund.confirmed', $id, ['reference' => $reference, 'amount' => $amount]);
+                    $this->restoreRefundedCoupon($order, $id);
                 }
                 return ['refund_id' => $id, 'status' => 'refunded'];
             });
@@ -253,10 +255,14 @@ trait ReturnOperations
         }
     }
 
-    private function lockReturn(int $id, int $shop): array
+    private function lockReturn(int $id, int $shop, ?int $order = null): array
     {
         $this->one("SELECT id FROM shops WHERE id=? AND status IN ('active','suspended') FOR UPDATE", [$shop])
             ?? throw new RuleViolation('当前店铺不可处理售后。');
+        if ($order !== null) {
+            // Cross-shop refund confirmations for a single order must see each other's committed quantities.
+            $this->one('SELECT id FROM orders WHERE id=? FOR UPDATE', [$order]);
+        }
         // All quantity reservations and releases serialize on the order line.
         $item = $this->one('SELECT i.*,m.shipping FROM refunds r JOIN order_items i ON i.id=r.item_id
             JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE r.id=? AND m.shop_id=? FOR UPDATE OF i', [$id, $shop]);
