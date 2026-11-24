@@ -33,6 +33,7 @@ trait CatalogOperations
     public function submitSku(
         int $merchant, int $product, string $sku, string $name, int $price, int $stock,
         int $category, string $family, string $color, string $size, bool $delivery, bool $pickup, int $baseRevision = 0,
+        ?int $memberPrice = null,
     ): int {
         $sku = trim($sku);
         $name = trim($name);
@@ -41,12 +42,13 @@ trait CatalogOperations
         $size = trim($size);
         if (!preg_match('/^[a-z0-9_-]{1,64}$/iD', $sku) || $name === '' || strlen($name) > 160
             || $family === '' || strlen($family) > 160 || strlen($color) > 40 || strlen($size) > 40
-            || $price < 1 || $price > 100_000_000 || $stock < 0 || $stock > 1_000_000_000 || (!$delivery && !$pickup)) {
+            || $price < 1 || $price > 100_000_000 || $stock < 0 || $stock > 1_000_000_000 || (!$delivery && !$pickup)
+            || ($memberPrice !== null && ($memberPrice < 1 || $memberPrice > $price))) {
             throw new RuleViolation('请检查 SKU、名称、规格、售价、库存和销售渠道。');
         }
         try {
             return $this->transaction(function () use ($merchant, $product, $sku, $name, $price, $stock, $category,
-                $family, $color, $size, $delivery, $pickup, $baseRevision): int {
+                $family, $color, $size, $delivery, $pickup, $baseRevision, $memberPrice): int {
                 $shop = $this->lockMerchantCatalog($merchant);
                 if (!$this->one('SELECT id FROM product_categories WHERE id=?', [$category])) {
                     throw new RuleViolation('请选择有效的商品分类。');
@@ -71,9 +73,9 @@ trait CatalogOperations
                 $familyRow = $this->one('SELECT id FROM product_families WHERE shop_id=? AND name=?', [$shop, $family]);
                 $familyId = $familyRow['id'] ?? $this->insert('INSERT INTO product_families (shop_id,name) VALUES (?,?)', [$shop, $family]);
                 $id = $this->insert("INSERT INTO product_releases
-                    (product_id,family_id,category_id,name,price,color,size,delivery,pickup,state,submitted_by)
-                    VALUES (?,?,?,?,?,?,?,?,?,'pending',?)",
-                    [$product, $familyId, $category, $name, $price, $color, $size, (int) $delivery, (int) $pickup, $merchant]);
+                    (product_id,family_id,category_id,name,price,color,size,delivery,pickup,state,submitted_by,member_price)
+                    VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)",
+                    [$product, $familyId, $category, $name, $price, $color, $size, (int) $delivery, (int) $pickup, $merchant, $memberPrice]);
                 $this->audit($merchant, 'catalog.release_submitted', $id, ['product_id' => $product]);
                 return $id;
             });
@@ -178,7 +180,7 @@ trait CatalogOperations
     {
         $actor = $this->shopActor($merchant, 'catalog');
         return $this->rows("SELECT p.*, r.id AS latest_id,r.name AS proposed_name,r.price AS proposed_price,
-            r.category_id,r.color,r.size,r.delivery,r.pickup,r.state AS review_state,r.review_reason,f.name AS family_name
+            r.category_id,r.color,r.size,r.delivery,r.pickup,r.member_price,r.state AS review_state,r.review_reason,f.name AS family_name
             FROM products p LEFT JOIN product_releases r ON r.id=(
                 SELECT id FROM product_releases WHERE product_id=p.id ORDER BY id DESC LIMIT 1
             )
@@ -202,7 +204,7 @@ trait CatalogOperations
         if ($channel === 'web' || $channel === 'store') {
             $where[] = $channel === 'web' ? 'r.delivery=1' : 'r.pickup=1';
         }
-        return $this->rows("SELECT p.*,s.name AS shop_name,r.color,r.size,r.delivery,r.pickup,c.name AS category_name,
+        return $this->rows("SELECT p.*,s.name AS shop_name,r.color,r.size,r.delivery,r.pickup,r.member_price,c.name AS category_name,
             f.name AS family_name FROM products p JOIN shops s ON s.id=p.shop_id
             JOIN product_releases r ON r.id=p.release_id LEFT JOIN product_categories c ON c.id=r.category_id
             LEFT JOIN product_families f ON f.id=r.family_id

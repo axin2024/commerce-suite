@@ -3,12 +3,14 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
+require_once __DIR__ . '/PromotionOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
 final class Commerce
 {
     use CatalogOperations;
+    use PromotionOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -72,7 +74,7 @@ final class Commerce
 
     private function actor(int $id, string ...$roles): array
     {
-        $actor = $this->one('SELECT id,role,shop_id,email FROM users WHERE id=?', [$id]);
+        $actor = $this->one('SELECT id,role,shop_id,email,member_level FROM users WHERE id=?', [$id]);
         if (!$actor || ($roles && !in_array($actor['role'], $roles, true))) {
             throw new RuleViolation('当前账号无权执行该操作。');
         }
@@ -370,33 +372,40 @@ final class Commerce
             return array_fill_keys(array_keys($weights), 0);
         }
         $total = array_sum($weights);
-        $parts = $remainders = [];
+        $parts = [];
         foreach ($weights as $id => $weight) {
-            $scaled = $amount * $weight;
-            $parts[$id] = intdiv($scaled, $total);
-            $remainders[$id] = $scaled % $total;
+            $parts[$id] = intdiv($amount * $weight, $total);
         }
-        uksort($remainders, static fn($a, $b) => $remainders[$b] <=> $remainders[$a] ?: $a <=> $b);
-        foreach (array_slice(array_keys($remainders), 0, $amount - array_sum($parts)) as $id) {
-            $parts[$id]++;
+        $remainder = $amount - array_sum($parts);
+        krsort($weights, SORT_NUMERIC);
+        foreach ($weights as $id => $weight) {
+            $extra = min($remainder, $weight - $parts[$id]);
+            $parts[$id] += $extra;
+            $remainder -= $extra;
+            if ($remainder === 0) {
+                break;
+            }
         }
         return $parts;
     }
 
-    private function priceCart(array $cart, string $channel, string $destination, bool $lock): array
+    private function priceCart(int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock): array
     {
         $destination = trim($destination);
         if (!in_array($channel, ['web', 'store'], true) || $destination === ''
             || strlen($destination) > 250 || !$cart || count($cart) > 30) {
             throw new RuleViolation('请选择履约方式并填写地址或提货点，购物车最多容纳 30 种 SKU。');
         }
+        $member = $this->one('SELECT member_level FROM users WHERE id=?' . ($lock ? ' FOR SHARE' : ''), [$buyer]);
+        $hasMemberPrice = $member['member_level'] === 'plus';
         ksort($cart, SORT_NUMERIC);
-        $items = $weights = $shops = [];
+        $items = $shops = [];
         foreach ($cart as $id => $quantity) {
             if (!is_int($id) || $id < 1 || !is_int($quantity) || $quantity < 1 || $quantity > 99) {
                 throw new RuleViolation('每种 SKU 的购买数量须为 1–99。');
             }
-            $product = $this->one("SELECT p.id,p.shop_id,p.sku,p.name,p.price,p.stock,p.reserved,p.release_id,r.delivery,r.pickup
+            $product = $this->one("SELECT p.id,p.shop_id,p.sku,p.name,p.price,p.stock,p.reserved,p.release_id,
+                r.delivery,r.pickup,r.category_id,r.member_price
                 FROM products p JOIN product_releases r ON r.id=p.release_id WHERE p.id=? AND p.status='active'"
                 . ($lock ? ' FOR UPDATE' : ''), [$id]);
             $shop = $product ? $this->one("SELECT id,commission_bps FROM shops WHERE id=? AND status='active'"
@@ -413,19 +422,24 @@ final class Commerce
             }
             $shopId = (int) $shop['id'];
             $price = (int) $product['price'];
-            $weights[$id] = $price * $quantity;
             $items[$id] = [
                 'shop' => $shopId, 'sku' => $product['sku'], 'name' => $product['name'], 'release_id' => (int) $product['release_id'],
-                'quantity' => $quantity, 'unit_price' => $price, 'fee_bps' => (int) $shop['commission_bps'],
+                'category_id' => $product['category_id'] === null ? null : (int) $product['category_id'],
+                'quantity' => $quantity, 'list_price' => $price,
+                'unit_price' => $hasMemberPrice ? (int) ($product['member_price'] ?? $price) : $price,
+                'fee_bps' => (int) $shop['commission_bps'],
             ];
             $shops[$shopId] = ['shipping' => $channel === 'web' ? 800 : 0, 'total' => 0];
         }
-        $subtotal = array_sum($weights);
-        $discount = count($shops) >= 2 && $subtotal >= 20_000 ? 2_000 : 0;
-        $parts = self::allocate($discount, $weights);
+        $offer = $this->pricePromotion($buyer, $items, $coupon, $lock);
+        $subtotal = $memberSavings = 0;
+        $discount = array_sum($offer['parts']);
         foreach ($items as $id => &$item) {
-            $item['discount'] = $parts[$id];
-            $net = $weights[$id] - $parts[$id];
+            $item['unit_price'] = $offer['prices'][$id];
+            $item['discount'] = $offer['parts'][$id] ?? 0;
+            $subtotal += $item['unit_price'] * $item['quantity'];
+            $memberSavings += ($item['list_price'] - $item['unit_price']) * $item['quantity'];
+            $net = $item['unit_price'] * $item['quantity'] - $item['discount'];
             $item['commission'] = intdiv($net * $item['fee_bps'], 10_000);
             $shops[$item['shop']]['total'] += $net;
         }
@@ -437,28 +451,28 @@ final class Commerce
         unset($shop);
         ksort($shops);
         return [
-            'cart' => $cart, 'channel' => $channel, 'destination' => $destination,
+            'cart' => $cart, 'channel' => $channel, 'destination' => $destination, 'coupon' => $coupon, 'promotion' => $offer['promotion'],
             'items' => $items, 'shops' => $shops, 'subtotal' => $subtotal,
-            'discount' => $discount, 'shipping' => $shipping, 'total' => $subtotal - $discount + $shipping,
+            'member_savings' => $memberSavings, 'discount' => $discount, 'shipping' => $shipping, 'total' => $subtotal - $discount + $shipping,
         ];
     }
 
-    public function quote(int $buyer, array $cart, string $channel, string $destination): array
+    public function quote(int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->recordQuote($buyer, $this->priceCart($cart, $channel, $destination, false));
+        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false));
     }
 
-    public function quoteCart(int $buyer, string $channel, string $destination): array
+    public function quoteCart(int $buyer, string $channel, string $destination, ?int $coupon = null): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->transaction(function () use ($buyer, $channel, $destination): array {
+        return $this->transaction(function () use ($buyer, $channel, $destination, $coupon): array {
             $this->lockCart($buyer);
             [$cart, $revisions] = $this->selectedCart($buyer);
             if (!$cart) {
                 throw new RuleViolation('请先勾选要结算的商品。');
             }
-            $snapshot = $this->priceCart($cart, $channel, $destination, false);
+            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false);
             $snapshot['cart_revisions'] = $revisions;
             return $this->recordQuote($buyer, $snapshot);
         });
@@ -511,16 +525,20 @@ final class Commerce
                     throw new RuleViolation('购物车内有店铺暂停营业，请更新购物车。');
                 }
             }
-            $current = $this->priceCart($snapshot['cart'], $snapshot['channel'], $snapshot['destination'], true);
+            $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'], $snapshot['coupon'] ?? null, true);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
                 throw new RuleViolation('商品或价格已变化，请重新报价。');
             }
-            $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
+            $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
+                promotion_revision_id,expires_at) VALUES (?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
                 $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
-                $current['total'], $current['destination'], bin2hex(random_bytes(16)),
+                $current['total'], $current['destination'], bin2hex(random_bytes(16)), $current['promotion']['revision_id'] ?? null,
             ]);
+            if ($current['coupon'] !== null) {
+                $this->query('UPDATE coupon_claims SET order_id=? WHERE buyer_id=? AND promotion_id=?',
+                    [$order, $buyer, $current['coupon']]);
+            }
             $merchantOrders = [];
             foreach ($current['shops'] as $shop => $totals) {
                 $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders (order_id,shop_id,total,shipping)
@@ -529,16 +547,19 @@ final class Commerce
             foreach ($current['items'] as $product => $item) {
                 $this->query('UPDATE products SET reserved=reserved+?,version=version+1 WHERE id=?', [$item['quantity'], $product]);
                 $this->query('INSERT INTO order_items
-                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id)
-                    VALUES (?,?,?,?,?,?,?,?,?)',
+                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
-                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id']]);
+                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price']]);
             }
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);
             }
             $this->query('UPDATE quotes SET order_id=? WHERE token=?', [$order, $token]);
             $this->audit($buyer, 'order.placed', $order, ['channel' => $current['channel'], 'total' => $current['total']]);
+            if ($current['total'] === 0) {
+                $this->confirmPayment($order, 'zero-total-' . $order, 0, 'promotion', $buyer);
+            }
             return $order;
         });
     }
@@ -596,6 +617,7 @@ final class Commerce
         $this->orderInventory($order, true);
         $this->query("UPDATE orders SET status='paid' WHERE id=?", [$order]);
         $this->query("UPDATE merchant_orders SET status='ready' WHERE order_id=?", [$order]);
+        $this->query('UPDATE coupon_claims SET redeemed_at=UTC_TIMESTAMP() WHERE order_id=? AND redeemed_at IS NULL', [$order]);
         $this->audit($actor, 'payment.recorded', $order, ['payment_id' => $payment, 'amount' => $amount, 'provider' => $provider]);
         return $payment;
     }
@@ -723,6 +745,7 @@ final class Commerce
         $this->orderInventory($order, false);
         $this->query("UPDATE orders SET status='cancelled' WHERE id=?", [$order]);
         $this->query("UPDATE merchant_orders SET status='cancelled' WHERE order_id=?", [$order]);
+        $this->query('UPDATE coupon_claims SET order_id=NULL WHERE order_id=? AND redeemed_at IS NULL', [$order]);
         $this->audit($actor, 'order.cancelled', $order, ['expired' => $expired]);
     }
 

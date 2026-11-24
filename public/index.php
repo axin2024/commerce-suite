@@ -36,10 +36,10 @@ function number(string $key, int $min = 1, int $max = PHP_INT_MAX): int
     return $value;
 }
 
-function cents(): int
+function cents(string $key = 'price'): int
 {
-    if (!preg_match('/^(\d{1,7})(?:\.(\d{1,2}))?$/D', trim(input('price')), $matches)) {
-        throw new RuleViolation('价格最多保留两位小数。');
+    if (!preg_match('/^(\d{1,9})(?:\.(\d{1,2}))?$/D', trim(input($key)), $matches)) {
+        throw new RuleViolation('金额最多保留两位小数。');
     }
     return (int) $matches[1] * 100 + (int) str_pad($matches[2] ?? '', 2, '0');
 }
@@ -163,7 +163,8 @@ try {
                 case 'quote':
                     $next = 'cart';
                     unset($_SESSION['quote']);
-                    $_SESSION['quote'] = $app->quoteCart($id, input('channel'), input('destination'));
+                    $coupon = input('coupon') === '' ? null : number('coupon');
+                    $_SESSION['quote'] = $app->quoteCart($id, input('channel'), input('destination'), $coupon);
                     break;
                 case 'place':
                     $next = 'cart';
@@ -171,8 +172,14 @@ try {
                     if (($_SESSION['quote']['token'] ?? null) === input('token')) {
                         unset($_SESSION['quote']);
                     }
-                    $_SESSION['notice'] = "订单 #$order 已创建，请在 15 分钟内完成支付。";
+                    $paymentState = $app->rows('SELECT status FROM orders WHERE id=? AND buyer_id=?', [$order, $id])[0]['status'];
+                    $_SESSION['notice'] = $paymentState === 'unpaid'
+                        ? "订单 #$order 已创建，请在 15 分钟内完成支付。"
+                        : "已确认订单 #$order。";
                     redirect('orders');
+                case 'claim_coupon':
+                    $_SESSION['notice'] = $app->claimCoupon($id, number('promotion')) ? '优惠券已领取。' : '该优惠券已领取。';
+                    redirect('account');
                 case 'pay':
                     $order = number('order');
                     $app->demoPay($id, $order, 'demo-order-' . $order, number('amount'));
@@ -215,7 +222,8 @@ try {
                 case 'sku_submit':
                     $app->submitSku($id, number('product', 0), input('sku'), input('name'), cents(),
                         number('stock', 0, 1_000_000_000), number('category'), input('family'), input('color'), input('size'),
-                        input('delivery') === '1', input('pickup') === '1', number('revision', 0));
+                        input('delivery') === '1', input('pickup') === '1', number('revision', 0),
+                        input('member_price') === '' ? null : cents('member_price'));
                     break;
                 case 'sku_stock':
                     $app->adjustStock($id, number('product'), number('stock', 0, 1_000_000_000), number('version', 0));
@@ -225,6 +233,21 @@ try {
                     break;
                 case 'catalog_category':
                     $app->createCategory($id, input('name'));
+                    break;
+                case 'member_level':
+                    $app->setMemberLevel($id, input('email'), input('level'));
+                    break;
+                case 'promotion_publish':
+                    $category = input('category') === '' ? null : number('category');
+                    $app->publishPromotion($id, input('code'), input('name'), cents('threshold'), cents('discount'),
+                        input('requires_claim') === '1', input('stack_member_price') === '1', $category, input('ends_at'));
+                    break;
+                case 'promotion_access':
+                    $enabled = input('enabled');
+                    if (!in_array($enabled, ['0', '1'], true)) {
+                        throw new RuleViolation('活动状态无效。');
+                    }
+                    $app->setPromotionEnabled($id, number('promotion'), $enabled === '1');
                     break;
                 case 'sku_review':
                     $decision = input('decision');

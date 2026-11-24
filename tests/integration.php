@@ -95,7 +95,8 @@ same(false, $app->profile($catalogStaff)['enabled'], 'revoked staff session can 
 denied(fn() => $app->submitSku($catalogStaff, 0, "N-$tag", '库存', 12000, 10, $bags, '北仓帆布包', '红色', 'M', true, true),
     'revoked staff has no catalog write access');
 $app->setShopMemberEnabled($north, $catalogStaff, true);
-$redRelease = $app->submitSku($catalogStaff, 0, "N-$tag", '北仓帆布包', 12000, 10, $bags, '北仓帆布包', '红色', 'M', true, true);
+$redRelease = $app->submitSku($catalogStaff, 0, "N-$tag", '北仓帆布包', 12000, 10, $bags, '北仓帆布包', '红色', 'M', true, true,
+    memberPrice: 10000);
 same([], $app->catalog("N-$tag"), 'merchant submission requires review before becoming visible');
 denied(fn() => $app->reviewSku($north, $redRelease, true), 'merchant cannot approve its own SKU release');
 $a = $app->reviewSku($admin, $redRelease, true);
@@ -125,7 +126,8 @@ $blueQuote = $app->quote($buyer, [$blueSku => 1], 'store', 'Store A');
 $app->unlistSku($catalogStaff, $blueSku);
 same([], $app->catalog("B-$tag"), 'unlisted variant disappears from product search');
 denied(fn() => $app->place($buyer, $blueQuote['token']), 'stale catalog result cannot be checked out after unlisting');
-same([1 => 1, 2 => 0, 3 => 0], Commerce::allocate(1, [1 => 1, 2 => 1, 3 => 1]), 'stable remainder tie-break');
+same([1 => 0, 2 => 0, 3 => 1], Commerce::allocate(1, [1 => 1, 2 => 1, 3 => 1]), 'last SKU receives the rounding remainder');
+same([3 => 1, 1 => 0, 2 => 1], Commerce::allocate(2, [3 => 1, 1 => 3, 2 => 3]), 'rounding moves backward when last line lacks capacity');
 same(19600, $app->quote($buyer, [$a => 1, $b => 1], 'web', '测试配送地址')['total'], 'per-shop shipping');
 $quote = $app->quote($buyer, [$b => 1, $a => 1], 'store', '一号自提点');
 same(18000, $quote['total'], 'combined shopper payment');
@@ -192,6 +194,61 @@ denied(fn() => $app->merchantLedger($catalogStaff), 'product staff cannot read f
 denied(fn() => $app->settle($financeStaff, $pondShop), 'shop finance cannot book a settlement batch');
 $app->setShopSuspended($admin, $northShop, false, '盘点完成');
 same($a, (int) $app->catalog("N-$tag")[0]['id'], 'resumed shop returns to sales');
+
+$memberEmail = "member-$tag@example.test";
+$memberBuyer = $app->register($memberEmail, $pw);
+denied(fn() => $app->setMemberLevel($memberBuyer, $memberEmail, 'plus'), 'buyers cannot upgrade themselves');
+$app->setMemberLevel($admin, $memberEmail, 'plus');
+$memberQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收');
+same(18000, $memberQuote['total'], 'member prices are applied before automatic campaign threshold');
+same(2000, $memberQuote['member_savings'], 'member saving recorded');
+same(0, $memberQuote['discount'], 'automatic campaign does not apply below its member-price threshold');
+$couponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店不叠加券', 20000, 2000, true, false);
+$campaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$couponVersion])[0]['promotion_id'];
+same(true, $app->claimCoupon($memberBuyer, $campaign), 'coupon claimed once');
+same(false, $app->claimCoupon($memberBuyer, $campaign), 'second coupon claim already received');
+denied(fn() => $app->quote($buyer, [$a => 1, $b => 1], 'store', '越权测试', $campaign), 'cannot use another buyer’s claim');
+$couponQuote = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+same(0, $couponQuote['member_savings'], 'non-stackable campaign uses listed prices');
+same([10800, 7200], array_column($couponQuote['shops'], 'total'), 'coupon apportioned to shop totals in cents');
+$newCouponVersion = $app->publishPromotion($admin, "cross-$tag", '跨店券新版', 20000, 1900, true, false);
+$stillOriginal = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+same($couponVersion, $stillOriginal['promotion']['revision_id'], 'existing claims keep the issued campaign version');
+same(true, $app->claimCoupon($otherBuyer, $campaign), 'new buyer may claim the latest campaign');
+$otherCoupon = $app->quote($otherBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+same([$newCouponVersion, 1900], [$otherCoupon['promotion']['revision_id'], $otherCoupon['discount']], 'new claim uses current version');
+$couponEnds = gmdate('Y-m-d\TH:i', time() + 3600);
+$scopedVersion = $app->publishPromotion($admin, "scoped-$tag", '箱包分类专享', 10000, 500, true, true, $bags, $couponEnds);
+$couponEndsStored = $app->rows('SELECT ends_at FROM promotion_revisions WHERE id=?', [$scopedVersion])[0]['ends_at'];
+same(str_replace('T', ' ', $couponEnds) . ':00', $couponEndsStored, 'campaign end time stored as UTC');
+$scoped = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$scopedVersion])[0]['promotion_id'];
+$app->claimCoupon($memberBuyer, $scoped);
+denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '分类活动验收', $scoped),
+    'out-of-scope seller does not count toward a cross-shop coupon');
+$app->setPromotionEnabled($admin, $campaign, false);
+denied(fn() => $app->place($memberBuyer, $couponQuote['token']), 'disabled campaign invalidates coupon quote');
+$app->setPromotionEnabled($admin, $campaign, true);
+$db->prepare('UPDATE quotes SET expires_at=UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE token=?')->execute([$couponQuote['token']]);
+denied(fn() => $app->place($memberBuyer, $couponQuote['token']), 'expired quote cannot create a discounted order');
+$heldCouponOrder = $app->place($memberBuyer, $stillOriginal['token']);
+same('held', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'unpaid order holds coupon');
+denied(fn() => $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign), 'held coupon cannot fund another order');
+same(true, $app->cancel($heldCouponOrder, $memberBuyer), 'cancel coupon order');
+same('available', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'cancel returns coupon to the same member');
+$requoted = $app->quote($memberBuyer, [$a => 1, $b => 1], 'store', '优惠活动验收', $campaign);
+$paidCouponOrder = $app->place($memberBuyer, $requoted['token']);
+$app->demoPay($memberBuyer, $paidCouponOrder, "coupon-pay-$tag", 18000);
+same('used', array_column($app->buyerCoupons($memberBuyer), 'status', 'id')[$campaign], 'payment consumes coupon');
+same($couponVersion, (int) $app->rows('SELECT promotion_revision_id FROM orders WHERE id=?', [$paidCouponOrder])[0]['promotion_revision_id'],
+    'order freezes the issued promotions revision');
+$freeVersion = $app->publishPromotion($admin, "free-$tag", '全额优惠验收', 20000, 20000, true, false);
+$freeCampaign = (int) $app->rows('SELECT promotion_id FROM promotion_revisions WHERE id=?', [$freeVersion])[0]['promotion_id'];
+$app->claimCoupon($buyer, $freeCampaign);
+$zero = $app->quote($buyer, [$a => 1, $b => 1], 'store', '零元验收', $freeCampaign);
+same(0, $zero['total'], 'full discount creates a zero amount order');
+$zeroOrder = $app->place($buyer, $zero['token']);
+same('promotion', $app->rows('SELECT provider FROM payments WHERE order_id=?', [$zeroOrder])[0]['provider'],
+    'zero amount checkout posts locally and requires no external payment');
 
 $app->setCartLine($buyer, $a, 1, true);
 $app->setCartLine($buyer, $b, 2, false);
@@ -269,7 +326,8 @@ denied(fn() => $app->submitSku($pond, $b, "P-$tag", '旧页面', 1, 0, $home, '�
 $app->reviewSku($admin, $cupUpdate, true);
 denied(fn() => $app->place($buyer, $stale['token']), 'price changes invalidate quote');
 $redQuote = $app->quote($buyer, [$a => 1], 'store', 'Store A');
-$redUpdate = $app->submitSku($north, $a, "N-$tag", '北仓帆布包', 12000, 0, $bags, '北仓帆布包', '朱红', 'M', true, true, $redRelease);
+$redUpdate = $app->submitSku($north, $a, "N-$tag", '北仓帆布包', 12000, 0, $bags, '北仓帆布包', '朱红', 'M', true, true, $redRelease,
+    memberPrice: 10000);
 $app->reviewSku($admin, $redUpdate, true);
 denied(fn() => $app->place($buyer, $redQuote['token']), 'same-price variant revision invalidates quote');
 same('红色', $app->rows('SELECT r.color FROM order_items i JOIN product_releases r ON r.id=i.product_release_id WHERE i.id=?', [$aItem])[0]['color'],

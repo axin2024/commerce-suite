@@ -1,5 +1,6 @@
 <?php
-$orders = $app->rows('SELECT * FROM orders WHERE buyer_id=? ORDER BY id DESC LIMIT 50', [$id]);
+$orders = $app->rows('SELECT o.*,r.name AS promotion_name FROM orders o LEFT JOIN promotion_revisions r ON r.id=o.promotion_revision_id
+    WHERE o.buyer_id=? ORDER BY o.id DESC LIMIT 50', [$id]);
 $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.id=r.item_id
     WHERE r.buyer_id=? ORDER BY r.id DESC LIMIT 50', [$id]);
 ?>
@@ -12,6 +13,9 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
             <strong class="amount"><?= cash($order['total']) ?></strong>
         </div>
         <p class="muted"><?= $order['channel'] === 'web' ? '配送' : '自提' ?> · <?= e($order['destination']) ?> · <?= e($order['created_at']) ?> UTC</p>
+        <?php if ($order['promotion_name']): ?>
+            <p class="muted"><?= e($order['promotion_name']) ?> · 优惠 <?= cash($order['discount']) ?></p>
+        <?php endif; ?>
         <?php if (sandboxWebhookSecret() !== null): ?>
             <p class="muted">沙箱支付意图 <code><?= e($order['payment_token']) ?></code></p>
         <?php endif; ?>

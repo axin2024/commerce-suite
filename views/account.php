@@ -4,6 +4,26 @@
     <section class="panel"><h2><?= e($user['email']) ?></h2><p><?= e($roles[$role]) ?></p>
         <?php form('logout'); ?><button class="secondary">退出登录</button></form>
     </section>
+    <?php if ($role === 'buyer'): ?>
+        <section class="panel" id="coupons">
+            <h2>会员与优惠券</h2>
+            <p>会员等级 · <?= $user['member_level'] === 'plus' ? '优享会员' : '普通会员' ?></p>
+            <?php
+            $coupons = $app->buyerCoupons((int) $user['id']);
+            $states = ['available' => '可用', 'held' => '订单待付款', 'used' => '已使用', 'unavailable' => '活动不可用'];
+            ?>
+            <?php if (!$coupons): ?><p class="muted">暂无优惠券。</p><?php endif; ?>
+            <?php foreach ($coupons as $coupon): ?>
+                <div class="record">
+                    <div><strong><?= e($coupon['name']) ?></strong>
+                        <p class="muted">满 <?= cash($coupon['threshold']) ?> 减 <?= cash($coupon['discount']) ?>
+                            <?= $coupon['ends_at'] ? ' · 截至 ' . e($coupon['ends_at']) . ' UTC' : '' ?></p></div>
+                    <span><?= e($states[$coupon['status']]) ?></span>
+                </div>
+            <?php endforeach; ?>
+            <a href="/">查看商城活动</a>
+        </section>
+    <?php endif; ?>
 <?php else: ?>
     <div class="two">
         <section class="panel">

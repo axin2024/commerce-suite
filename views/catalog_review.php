@@ -19,6 +19,7 @@ $pending = $app->rows("SELECT r.*,p.sku,p.release_id,s.name AS shop_name,c.name 
         <div class="record">
             <div>
                 <strong><?= e($proposal['shop_name']) ?> · <?= e($proposal['sku']) ?> · <?= e($proposal['name']) ?> · <?= cash($proposal['price']) ?></strong>
+                <?php if ($proposal['member_price'] !== null): ?><span>会员价 <?= cash($proposal['member_price']) ?></span><?php endif; ?>
                 <p><?= e($proposal['category_name']) ?> / <?= e($proposal['family_name']) ?>
                     <?= e(trim($proposal['color'] . ' ' . $proposal['size'])) ?> ·
                     <?= e(implode('、', array_filter([$proposal['delivery'] ? '配送' : '', $proposal['pickup'] ? '门店自提' : '']))) ?></p>

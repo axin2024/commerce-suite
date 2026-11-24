@@ -83,6 +83,9 @@ catalog_a = "/?q=NORTH-01"
 catalog_b = "/?q=POND-01"
 part_a = extract(buyer.load(catalog_a), "product")
 part_b = extract(buyer.load(catalog_b), "product")
+coupon = extract(buyer.load(catalog_a), "promotion")
+assert "优惠券已领取" in buyer.submit(catalog_a, "claim_coupon", promotion=coupon)
+assert "该优惠券已领取" in buyer.submit(catalog_a, "claim_coupon", promotion=coupon)
 buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
 buyer.submit(catalog_b, "cart", product=part_b, quantity=1)
 second_device = Session()
@@ -98,7 +101,7 @@ stale = buyer.submit("/?page=cart", "place", token=extract(partial, "token"))
 assert "购物车内容已变化" in stale
 bad = buyer.submit("/?page=cart", "quote", csrf="invalid", channel="store", destination="测试自提点")
 assert "表单已失效" in bad
-quote = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点")
+quote = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点", coupon=coupon)
 assert "¥180.00" in quote
 order = buyer.submit("/?page=cart", "place", token=extract(quote, "token"))
 order_id = extract(order, "order")
@@ -124,6 +127,7 @@ if SANDBOX_SECRET:
 else:
     paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
 assert "已付款" in paid and "¥108.00" in paid and "¥72.00" in paid
+assert "已使用" in buyer.load("/?page=account")
 for merchant in (north, pond):
     merchant_page = merchant.load("/?page=merchant")
     assert "测试自提点" in merchant_page

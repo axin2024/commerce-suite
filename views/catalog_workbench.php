@@ -27,6 +27,7 @@ $skuForm = static function (?array $product) use ($categories): void {
         <label>颜色<input name="color" value="<?= e($product['color'] ?? '') ?>" maxlength="40"></label>
         <label>尺码或规格<input name="size" value="<?= e($product['size'] ?? '') ?>" maxlength="40"></label>
         <label>售价（元）<input name="price" value="<?= e($current === null ? '' : number_format($current / 100, 2, '.', '')) ?>" inputmode="decimal" required></label>
+        <label>会员价（选填）<input name="member_price" value="<?= e(isset($product['member_price']) ? number_format($product['member_price'] / 100, 2, '.', '') : '') ?>" inputmode="decimal"></label>
     </div>
     <div class="inline">
         <label class="inline"><input type="checkbox" name="delivery" value="1"<?= ($product['delivery'] ?? 1) ? ' checked' : '' ?>>配送</label>

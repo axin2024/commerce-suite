@@ -32,6 +32,7 @@
             $selected = array_filter($cartLines, static fn(array $line): bool => (bool) $line['selected']);
             $revisions = array_column($selected, 'revision', 'product_id');
             $quote = ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
+            $coupons = array_filter($app->buyerCoupons((int) $user['id']), static fn(array $coupon): bool => $coupon['status'] === 'available');
             form('quote');
             ?>
             <label>履约方式<select name="channel">
@@ -39,11 +40,21 @@
                 <option value="store"<?= ($savedQuote['channel'] ?? '') === 'store' ? ' selected' : '' ?>>门店自提</option>
             </select></label>
             <label>配送地址或自提点<input name="destination" value="<?= e($savedQuote['destination'] ?? '') ?>" maxlength="80" required></label>
+            <?php if ($coupons): ?>
+                <label>优惠券<select name="coupon">
+                    <option value="">系统匹配可用活动</option>
+                    <?php foreach ($coupons as $coupon): ?>
+                        <option value="<?= e($coupon['id']) ?>"<?= ($savedQuote['coupon'] ?? null) === (int) $coupon['id'] ? ' selected' : '' ?>>
+                            <?= e($coupon['name']) ?></option>
+                    <?php endforeach; ?>
+                </select></label>
+            <?php endif; ?>
             <button class="secondary">计算费用</button></form>
             <?php if ($quote): ?>
                 <dl class="totals">
-                    <dt>商品小计</dt><dd><?= cash($quote['subtotal']) ?></dd>
-                    <dt>跨店优惠</dt><dd><?= cash(-$quote['discount']) ?></dd>
+                    <dt>商品标价小计</dt><dd><?= cash($quote['subtotal'] + ($quote['member_savings'] ?? 0)) ?></dd>
+                    <?php if ($quote['member_savings'] ?? 0): ?><dt>会员价优惠</dt><dd><?= cash(-$quote['member_savings']) ?></dd><?php endif; ?>
+                    <?php if ($quote['discount']): ?><dt><?= e($quote['promotion']['name'] ?? '跨店优惠') ?></dt><dd><?= cash(-$quote['discount']) ?></dd><?php endif; ?>
                     <dt>运费</dt><dd><?= cash($quote['shipping']) ?></dd>
                     <dt>应付金额</dt><dd><strong><?= cash($quote['total']) ?></strong></dd>
                 </dl>

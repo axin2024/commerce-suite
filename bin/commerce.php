@@ -45,6 +45,7 @@ try {
                 $release = $app->submitSku($merchant, 0, $sku, $name, $price, $stock, $category, $family, $color, $size, true, true);
                 $app->reviewSku($admin, $release, true);
             }
+            $app->publishPromotion($admin, 'marketplace-opening', '跨店满 200 减 20', 20000, 2000, true, true);
             echo "Demo accounts and catalog created. See README.\n";
             break;
         case 'expire':

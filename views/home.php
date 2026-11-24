@@ -3,14 +3,35 @@ $search = is_string($_GET['q'] ?? null) && strlen($_GET['q']) <= 150 ? $_GET['q'
 $categoryFilter = filter_var($_GET['category'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null;
 $channelFilter = in_array($_GET['channel'] ?? '', ['web', 'store'], true) ? $_GET['channel'] : '';
 $products = $app->catalog($search, $categoryFilter, $channelFilter);
+$offers = $app->promotionOffers();
+$claimed = $role === 'buyer' ? array_column($app->buyerCoupons((int) $user['id']), 'status', 'id') : [];
 ?>
 <section class="hero">
     <div>
         <h1>全渠道商城</h1>
         <p>选购不同店铺的商品，统一下单付款。支持配送到家和门店自提。</p>
     </div>
-    <aside>跨店满 ¥200 减 ¥20 <span>结算时自动应用</span></aside>
 </section>
+<?php if ($offers): ?>
+<section class="panel">
+    <h2>跨店优惠</h2>
+    <?php foreach ($offers as $offer): ?>
+        <div class="record">
+            <div><strong><?= e($offer['name']) ?></strong>
+                <p class="muted"><?= e($offer['category_name'] ?? '全场') ?> · 满 <?= cash($offer['threshold']) ?> 减 <?= cash($offer['discount']) ?>
+                    <?= $offer['stack_member_price'] ? ' · 可叠加会员价' : ' · 活动商品按标价计算门槛' ?></p>
+            </div>
+            <?php if (!$offer['requires_claim']): ?><span>结算自动匹配</span>
+            <?php elseif (isset($claimed[$offer['id']])): ?><a href="/?page=account#coupons">已领取</a>
+            <?php elseif ($role === 'buyer'):
+                form('claim_coupon'); echo field('promotion', $offer['id']); ?>
+                <button class="secondary">领券</button></form>
+            <?php elseif ($role === 'guest'): ?><a href="/?page=account">登录领券</a>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+</section>
+<?php endif; ?>
 <section>
     <div class="heading">
         <h2>商品目录</h2>
@@ -39,6 +60,9 @@ $products = $app->catalog($search, $categoryFilter, $channelFilter);
                 <p class="muted"><?= e(implode(' · ', array_filter([$p['category_name'], $p['family_name'], $p['color'], $p['size']]))) ?></p>
                 <p class="muted"><?= e(implode('、', array_filter([$p['delivery'] ? '配送' : '', $p['pickup'] ? '门店自提' : '']))) ?></p>
                 <div class="product-price"><strong><?= cash($p['price']) ?></strong><span>可售 <?= $available ?></span></div>
+                <?php if ($role === 'buyer' && $user['member_level'] === 'plus' && $p['member_price'] !== null): ?>
+                    <p>会员价 <strong><?= cash($p['member_price']) ?></strong></p>
+                <?php endif; ?>
                 <?php if ($role === 'buyer' && $available): ?>
                     <?php form('cart'); echo field('product', $p['id']); ?>
                     <div class="inline">
