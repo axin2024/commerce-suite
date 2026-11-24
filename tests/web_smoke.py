@@ -61,12 +61,24 @@ part_a = extract(buyer.load(catalog_a), "product")
 part_b = extract(buyer.load(catalog_b), "product")
 buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
 buyer.submit(catalog_b, "cart", product=part_b, quantity=1)
+second_device = Session()
+second_device.login("buyer")
+device_cart = second_device.load("/?page=cart")
+assert "山形帆布托特包" in device_cart and "湖蓝陶瓷早餐杯" in device_cart
+second_device.submit("/?page=cart", "cart", product=part_a, quantity=1,
+                     revision=extract(device_cart, "revision"))
+partial = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点")
+assert "¥80.00" in partial
+second_device.submit(catalog_a, "cart", product=part_a, quantity=1)
+stale = buyer.submit("/?page=cart", "place", token=extract(partial, "token"))
+assert "购物车内容已变化" in stale
 bad = buyer.submit("/?page=cart", "quote", csrf="invalid", channel="store", destination="测试自提点")
 assert "表单已失效" in bad
 quote = buyer.submit("/?page=cart", "quote", channel="store", destination="测试自提点")
 assert "¥180.00" in quote
 order = buyer.submit("/?page=cart", "place", token=extract(quote, "token"))
 order_id = extract(order, "order")
+assert "购物车为空" in second_device.load("/?page=cart")
 paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
 assert "已付款" in paid and "¥108.00" in paid and "¥72.00" in paid
 for merchant in (north, pond):
@@ -87,7 +99,7 @@ assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80"
 assert "生成结算批次" in settlement
 shop_id = extract(settlement, "shop")
 finance.submit("/?page=platform", "settle", shop=shop_id)
-print("Web flow passed: login, role isolation, CSRF, checkout, payment, fulfillment, refund, and settlement.")
+print("Web flow passed: login, role isolation, CSRF, shared cart, quote revisions, checkout, payment, fulfillment, refund, and settlement.")
 
 suffix = uuid4().hex[:8]
 shop_name = f"入驻测试 {suffix}"

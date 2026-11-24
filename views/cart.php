@@ -1,20 +1,22 @@
 <div class="heading"><h1>购物车</h1><a href="/">继续选购</a></div>
-<?php if (!$cart): ?>
+<?php if (!$cartLines): ?>
     <p class="panel">购物车为空。</p>
 <?php else: ?>
     <div class="two">
         <section class="panel">
-            <h2>已选商品</h2>
-            <?php foreach ($cart as $product => $qty):
-                $p = $app->rows('SELECT p.name,p.price,p.status,s.name AS shop_name FROM products p
-                    JOIN shops s ON s.id=p.shop_id WHERE p.id=? AND p.status=\'active\' AND s.status=\'active\'', [$product])[0] ?? null;
-                ?>
+            <h2>购物车商品</h2>
+            <?php foreach ($cartLines as $line): ?>
                 <div class="record">
-                    <div><strong><?= e($p['name'] ?? '不可用商品') ?></strong>
-                        <div class="muted"><?= e($p['shop_name'] ?? '') ?> · <?= cash($p['price'] ?? 0) ?></div></div>
-                    <?php form('cart'); echo field('product', $product); ?>
+                    <div><strong><?= e($line['name']) ?></strong>
+                        <div class="muted"><?= e($line['shop_name']) ?> · <?= cash($line['price']) ?></div>
+                        <?php if (!$line['on_sale'] || $line['available'] < $line['quantity']): ?>
+                            <div class="muted"><?= $line['on_sale'] ? '可用库存不足' : '暂停销售' ?></div>
+                        <?php endif; ?>
+                    </div>
+                    <?php form('cart'); echo field('product', $line['product_id']), field('revision', $line['revision']); ?>
+                    <label class="inline"><input type="checkbox" name="selected" value="1"<?= $line['selected'] ? ' checked' : '' ?>>参加结算</label>
                     <div class="inline">
-                        <input type="number" min="0" max="99" name="quantity" value="<?= $qty ?>" aria-label="购买数量，填 0 移除" required>
+                        <input type="number" min="0" max="99" name="quantity" value="<?= e($line['quantity']) ?>" aria-label="购买数量，填 0 移除" required>
                         <button class="secondary">更新</button>
                         <button class="secondary" name="remove" value="1" formnovalidate>移除</button>
                     </div>
@@ -24,12 +26,18 @@
         </section>
         <section class="panel">
             <h2>结算</h2>
-            <?php $quote = $_SESSION['quote'] ?? null; form('quote'); ?>
+            <?php
+            $savedQuote = $_SESSION['quote'] ?? null;
+            $selected = array_filter($cartLines, static fn(array $line): bool => (bool) $line['selected']);
+            $revisions = array_column($selected, 'revision', 'product_id');
+            $quote = ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
+            form('quote');
+            ?>
             <label>履约方式<select name="channel">
                 <option value="web">快递配送</option>
-                <option value="store"<?= ($quote['channel'] ?? '') === 'store' ? ' selected' : '' ?>>门店自提</option>
+                <option value="store"<?= ($savedQuote['channel'] ?? '') === 'store' ? ' selected' : '' ?>>门店自提</option>
             </select></label>
-            <label>配送地址或自提点<input name="destination" value="<?= e($quote['destination'] ?? '') ?>" maxlength="80" required></label>
+            <label>配送地址或自提点<input name="destination" value="<?= e($savedQuote['destination'] ?? '') ?>" maxlength="80" required></label>
             <button class="secondary">计算费用</button></form>
             <?php if ($quote): ?>
                 <dl class="totals">

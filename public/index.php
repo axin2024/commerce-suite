@@ -101,7 +101,10 @@ try {
         redirect('account');
     }
     $role = $user['role'] ?? 'guest';
-    $cart = $_SESSION['cart'] ?? [];
+    if ($role === 'buyer' && isset($_SESSION['cart'])) {
+        $app->importSessionCart($id, $_SESSION['cart']);
+        unset($_SESSION['cart'], $_SESSION['quote']);
+    }
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $next = match ($role) {
@@ -153,26 +156,20 @@ try {
                     }
                     $productId = number('product');
                     $qty = input('remove') === '1' ? 0 : number('quantity', 0, 99);
-                    if ($qty > 0) {
-                        if (!array_key_exists($productId, $cart) && count($cart) >= 30) {
-                            throw new RuleViolation('购物车最多容纳 30 种 SKU。');
-                        }
-                        $cart[$productId] = $qty;
-                    } else {
-                        unset($cart[$productId]);
-                    }
-                    $_SESSION['cart'] = $cart;
-                    unset($_SESSION['quote']);
+                    $revision = input('revision');
+                    $selected = $revision === '' || input('selected') === '1';
+                    $app->setCartLine($id, $productId, $qty, $selected, $revision === '' ? null : $revision);
                     break;
                 case 'quote':
                     $next = 'cart';
-                    $_SESSION['quote'] = $app->quote($id, $cart, input('channel'), input('destination'));
+                    unset($_SESSION['quote']);
+                    $_SESSION['quote'] = $app->quoteCart($id, input('channel'), input('destination'));
                     break;
                 case 'place':
                     $next = 'cart';
-                    $order = $app->place($id, input('token'));
+                    $order = $app->place($id, input('token'), requireCartQuote: true);
                     if (($_SESSION['quote']['token'] ?? null) === input('token')) {
-                        unset($_SESSION['cart'], $_SESSION['quote']);
+                        unset($_SESSION['quote']);
                     }
                     $_SESSION['notice'] = "订单 #$order 已创建，请在 15 分钟内完成支付。";
                     redirect('orders');
@@ -259,6 +256,8 @@ try {
         http_response_code(403);
         $page = 'account';
     }
+    $cartLines = $role === 'buyer' ? $app->cartLines($id) : [];
+    $cart = array_column($cartLines, 'quantity', 'product_id');
     ob_start();
     require __DIR__ . '/../views/layout.php';
     ob_end_flush();

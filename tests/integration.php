@@ -163,6 +163,34 @@ denied(fn() => $app->settle($financeStaff, $pondShop), 'shop finance cannot book
 $app->setShopSuspended($admin, $northShop, false, '盘点完成');
 same($a, (int) $app->catalog("N-$tag")[0]['id'], 'resumed shop returns to sales');
 
+$app->setCartLine($buyer, $a, 1, true);
+$app->setCartLine($buyer, $b, 2, false);
+same([], $app->cartLines($otherBuyer), 'cart isolated to buyer account');
+$cartQuote = $app->quoteCart($buyer, 'store', '购物车自提');
+same([$a => 1], $cartQuote['cart'], 'unselected lines excluded from quote');
+same(12000, $cartQuote['total'], 'single selected SKU has no cross-shop discount');
+$oldRevision = $cartQuote['cart_revisions'][$a];
+$app->setCartLine($buyer, $a, 2, true, $oldRevision);
+denied(fn() => $app->place($buyer, $cartQuote['token'], requireCartQuote: true), 'changed cart requires requote');
+denied(fn() => $app->setCartLine($buyer, $a, 0, true, $oldRevision), 'stale cart edit cannot delete a newer selection');
+$app->setCartLine($buyer, $a, 0, true);
+$app->setCartLine($buyer, $a, 1, true);
+denied(fn() => $app->place($buyer, $cartQuote['token'], requireCartQuote: true), 'reinserted line retains no stale quote');
+$app->importSessionCart($buyer, [$a => 3, $b => 5, PHP_INT_MAX => 1]);
+same([1, 2], array_map('intval', array_column($app->cartLines($buyer), 'quantity')),
+    'legacy session merge preserves existing persistent cart');
+$app->importSessionCart($otherBuyer, [$b => 1]);
+same([$b], array_map('intval', array_column($app->cartLines($otherBuyer), 'product_id')), 'legacy cart copied once');
+$app->setCartLine($otherBuyer, $b, 1, false);
+denied(fn() => $app->quoteCart($otherBuyer, 'store', '购物车自提'), 'no selected cart lines');
+$directQuote = $app->quote($buyer, [$a => 1], 'store', '购物车自提');
+denied(fn() => $app->place($buyer, $directQuote['token'], requireCartQuote: true), 'web checkout requires a cart-bound quote');
+$cartQuote = $app->quoteCart($buyer, 'store', '购物车自提');
+$cartOrder = $app->place($buyer, $cartQuote['token'], requireCartQuote: true);
+same($cartOrder, $app->place($buyer, $cartQuote['token'], requireCartQuote: true), 'cart checkout replay after clearing');
+same([$b], array_map('intval', array_column($app->cartLines($buyer), 'product_id')), 'checkout keeps unselected lines');
+same(true, $app->cancel($cartOrder, $buyer), 'test cart hold released');
+
 $race = $app->saveProduct($north, 0, "R-$tag", '最后一件', 200, 1, 'active');
 $q1 = $app->quote($buyer, [$race => 1], 'store', 'Store A');
 $q2 = $app->quote($otherBuyer, [$race => 1], 'store', 'Store A');

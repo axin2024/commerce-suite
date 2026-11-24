@@ -23,6 +23,7 @@ input, select {
     border-radius: 8px; padding: .5em .65em; min-width: 0; width: 100%;
 }
 input[type=number] { width: 6em; }
+input[type=checkbox] { width: auto; }
 input:focus-visible, select:focus-visible, a:focus-visible, button:focus-visible, summary:focus-visible {
     outline: 3px solid #ab672d; outline-offset: 2px;
 }

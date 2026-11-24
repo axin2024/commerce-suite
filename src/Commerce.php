@@ -332,6 +332,84 @@ final class Commerce
             ORDER BY p.id DESC LIMIT 100", [$pattern, $pattern]);
     }
 
+    public function cartLines(int $buyer): array
+    {
+        $this->actor($buyer, 'buyer');
+        return $this->rows("SELECT c.product_id,c.quantity,c.selected,c.revision,p.sku,p.name,p.price,s.name AS shop_name,
+            p.stock-p.reserved AS available,(p.status='active' AND s.status='active') AS on_sale
+            FROM cart_lines c JOIN products p ON p.id=c.product_id JOIN shops s ON s.id=p.shop_id
+            WHERE c.buyer_id=? ORDER BY c.product_id", [$buyer]);
+    }
+
+    public function setCartLine(int $buyer, int $product, int $quantity, bool $selected, ?string $revision = null): void
+    {
+        $this->actor($buyer, 'buyer');
+        if ($quantity < 0 || $quantity > 99) {
+            throw new RuleViolation('每种 SKU 的购买数量须为 1–99。');
+        }
+        $this->transaction(function () use ($buyer, $product, $quantity, $selected, $revision): void {
+            $this->lockCart($buyer);
+            $line = $this->one('SELECT revision FROM cart_lines WHERE buyer_id=? AND product_id=?', [$buyer, $product]);
+            if ($revision !== null && ($line['revision'] ?? null) !== $revision) {
+                throw new RuleViolation('购物车已在其他页面更新，请刷新后重试。');
+            }
+            if ($quantity === 0) {
+                $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND product_id=?', [$buyer, $product]);
+                return;
+            }
+            if (!$line) {
+                $availability = $this->one("SELECT p.id FROM products p JOIN shops s ON s.id=p.shop_id
+                    WHERE p.id=? AND p.status='active' AND s.status='active'", [$product]);
+                if (!$availability) {
+                    throw new RuleViolation('该商品目前不可加入购物车。');
+                }
+                $count = (int) $this->one('SELECT COUNT(*) AS total FROM cart_lines WHERE buyer_id=?', [$buyer])['total'];
+                if ($count >= 30) {
+                    throw new RuleViolation('购物车最多容纳 30 种 SKU。');
+                }
+                $this->query('INSERT INTO cart_lines (buyer_id,product_id,quantity,selected,revision) VALUES (?,?,?,?,?)',
+                    [$buyer, $product, $quantity, (int) $selected, bin2hex(random_bytes(16))]);
+                return;
+            }
+            $this->query('UPDATE cart_lines SET quantity=?,selected=?,revision=? WHERE buyer_id=? AND product_id=?',
+                [$quantity, (int) $selected, bin2hex(random_bytes(16)), $buyer, $product]);
+        });
+    }
+
+    public function importSessionCart(int $buyer, array $cart): void
+    {
+        $this->actor($buyer, 'buyer');
+        $this->transaction(function () use ($buyer, $cart): void {
+            $this->lockCart($buyer);
+            $remaining = 30 - (int) $this->one('SELECT COUNT(*) AS total FROM cart_lines WHERE buyer_id=?', [$buyer])['total'];
+            foreach ($cart as $product => $quantity) {
+                if ($remaining <= 0) {
+                    break;
+                }
+                if (!is_int($product) || !is_int($quantity) || $quantity < 1 || $quantity > 99) {
+                    continue;
+                }
+                $insert = $this->query('INSERT INTO cart_lines (buyer_id,product_id,quantity,revision)
+                    SELECT ?,p.id,?,? FROM products p LEFT JOIN cart_lines c ON c.product_id=p.id AND c.buyer_id=?
+                    WHERE p.id=? AND c.product_id IS NULL', [$buyer, $quantity, bin2hex(random_bytes(16)), $buyer, $product]);
+                $remaining -= $insert->rowCount();
+            }
+        });
+    }
+
+    private function lockCart(int $buyer): void
+    {
+        $this->one('SELECT id FROM users WHERE id=? FOR UPDATE', [$buyer]);
+    }
+
+    private function selectedCart(int $buyer): array
+    {
+        $lines = $this->rows('SELECT product_id,quantity,revision FROM cart_lines
+            WHERE buyer_id=? AND selected=1 ORDER BY product_id', [$buyer]);
+        return [array_map('intval', array_column($lines, 'quantity', 'product_id')),
+            array_column($lines, 'revision', 'product_id')];
+    }
+
     public static function allocate(int $amount, array $weights): array
     {
         if (!$amount) {
@@ -407,7 +485,26 @@ final class Commerce
     public function quote(int $buyer, array $cart, string $channel, string $destination): array
     {
         $this->actor($buyer, 'buyer');
-        $snapshot = $this->priceCart($cart, $channel, $destination, false);
+        return $this->recordQuote($buyer, $this->priceCart($cart, $channel, $destination, false));
+    }
+
+    public function quoteCart(int $buyer, string $channel, string $destination): array
+    {
+        $this->actor($buyer, 'buyer');
+        return $this->transaction(function () use ($buyer, $channel, $destination): array {
+            $this->lockCart($buyer);
+            [$cart, $revisions] = $this->selectedCart($buyer);
+            if (!$cart) {
+                throw new RuleViolation('请先勾选要结算的商品。');
+            }
+            $snapshot = $this->priceCart($cart, $channel, $destination, false);
+            $snapshot['cart_revisions'] = $revisions;
+            return $this->recordQuote($buyer, $snapshot);
+        });
+    }
+
+    private function recordQuote(int $buyer, array $snapshot): array
+    {
         $token = bin2hex(random_bytes(16));
         $this->query('INSERT INTO quotes (token,buyer_id,snapshot,expires_at)
             VALUES (?,?,?,UTC_TIMESTAMP() + INTERVAL 10 MINUTE)',
@@ -415,10 +512,11 @@ final class Commerce
         return ['token' => $token] + $snapshot;
     }
 
-    public function place(int $buyer, string $token): int
+    public function place(int $buyer, string $token, bool $requireCartQuote = false): int
     {
         $this->actor($buyer, 'buyer');
-        return $this->transaction(function () use ($buyer, $token): int {
+        return $this->transaction(function () use ($buyer, $token, $requireCartQuote): int {
+            $this->lockCart($buyer);
             $quote = $this->one('SELECT *, expires_at <= UTC_TIMESTAMP() AS expired
                 FROM quotes WHERE token=? AND buyer_id=? FOR UPDATE', [$token, $buyer]);
             if (!$quote) {
@@ -431,6 +529,18 @@ final class Commerce
                 throw new RuleViolation('报价已过期，请重新报价。');
             }
             $snapshot = json_decode($quote['snapshot'], true, flags: JSON_THROW_ON_ERROR);
+            $cartRevisions = $snapshot['cart_revisions'] ?? null;
+            unset($snapshot['cart_revisions']);
+            if ($requireCartQuote && $cartRevisions === null) {
+                throw new RuleViolation('请重新计算购物车费用。');
+            }
+            if ($cartRevisions !== null) {
+                [, $revisions] = $this->selectedCart($buyer);
+                ksort($cartRevisions, SORT_NUMERIC);
+                if ($cartRevisions !== $revisions) {
+                    throw new RuleViolation('购物车内容已变化，请重新计算费用。');
+                }
+            }
             $shopIds = array_keys($snapshot['shops']);
             sort($shopIds, SORT_NUMERIC);
             // Match catalog edits and shop suspension: lock shops before inventory.
@@ -461,6 +571,9 @@ final class Commerce
                     (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission) VALUES (?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
                         $item['unit_price'], $item['discount'], $item['commission']]);
+            }
+            if ($cartRevisions !== null) {
+                $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);
             }
             $this->query('UPDATE quotes SET order_id=? WHERE token=?', [$order, $token]);
             $this->audit($buyer, 'order.placed', $order, ['channel' => $current['channel'], 'total' => $current['total']]);
