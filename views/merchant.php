@@ -77,7 +77,10 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 <?php if ($canCatalog) { require __DIR__ . '/catalog_workbench.php'; } ?>
 <?php if ($isOwner && $canOperate) { require __DIR__ . '/freight_workbench.php'; } ?>
 <?php if ($canFulfill):
-    $merchantOrders = $app->rows("SELECT m.*,o.destination FROM merchant_orders m JOIN orders o ON o.id=m.order_id
+    $merchantOrders = $app->rows("SELECT m.*,o.destination,c.code AS source_channel,co.reference AS source_reference
+        FROM merchant_orders m JOIN orders o ON o.id=m.order_id
+        LEFT JOIN channel_orders co ON co.order_id=m.order_id
+        LEFT JOIN catalog_channels c ON c.id=co.channel_id AND c.shop_id=m.shop_id
         WHERE m.shop_id=? AND o.channel='web' AND m.status IN ('ready','partial','shipped','fulfilled')
         ORDER BY m.id DESC LIMIT 50", [$shop['id']]); ?>
 <section class="panel" id="fulfillment">
@@ -86,6 +89,9 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
     <?php foreach ($merchantOrders as $order): ?>
         <div class="record">
             <div><strong>#<?= e($order['id']) ?> · <?= cash($order['total']) ?></strong> <?= badge($order['status']) ?>
+                <?php if ($order['source_channel'] !== null): ?>
+                    <p class="muted"><?= e($order['source_channel']) ?> · <?= e($order['source_reference']) ?></p>
+                <?php endif; ?>
                 <p class="muted"><?= e($order['destination']) ?></p>
                 <?php if ($app->hasPendingPreorders((int) $order['id'])): ?><p class="muted">部分商品等待预售到货。</p><?php endif; ?>
                 <?php foreach ($app->rows('SELECT i.name,i.sku,i.quantity,r.color,r.size FROM order_items i

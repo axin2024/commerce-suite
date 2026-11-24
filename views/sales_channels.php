@@ -4,7 +4,8 @@ $channels = $app->catalogChannels($merchant);
 $channelId = filter_var($_GET['channel'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 $after = filter_var($_GET['after'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) ?: 0;
 $credential = $_SESSION['catalog_credential'] ?? null;
-unset($_SESSION['catalog_credential']);
+$orderCredential = $_SESSION['channel_order_credential'] ?? null;
+unset($_SESSION['catalog_credential'], $_SESSION['channel_order_credential']);
 ?>
 <div class="heading"><h1>外部销售渠道</h1><a href="/?page=merchant">返回商家中心</a></div>
 <section class="panel">
@@ -39,6 +40,7 @@ $nextPage = count($listings) > 50;
 if ($nextPage) {
     array_pop($listings);
 }
+$orderAccess = $active ? $app->channelOrderAccess($merchant, $channelId) : null;
 ?>
 <section class="panel">
     <h2><?= e($channel['label']) ?> · <code><?= e($channel['code']) ?></code></h2>
@@ -89,3 +91,26 @@ if ($nextPage) {
         <a href="/?page=sales_channels&amp;channel=<?= e($channelId) ?>&amp;after=<?= e(end($listings)['id']) ?>">下一页</a>
     <?php endif; ?>
 </section>
+<?php if ($orderAccess !== null): ?>
+    <section class="panel">
+        <h2>接收渠道订单</h2>
+        <p>订单接口 <code>/channel-orders.php</code> · <?= $orderAccess['enabled'] ? '已授权' : '未授权' ?></p>
+        <?php if ($orderCredential !== null && $orderCredential['id'] === $channelId && $orderAccess['enabled']): ?>
+            <p class="flash" role="status">请保存订单密钥，刷新后将隐藏。
+                <code class="channel-order-credential"><?= e($orderCredential['token']) ?></code></p>
+        <?php endif; ?>
+        <div class="inline">
+            <?php form('channel_order_issue'); echo field('channel', $channelId), field('revision', $orderAccess['revision']); ?>
+                <button class="secondary"><?= $orderAccess['enabled'] ? '轮换订单密钥' : '签发订单密钥' ?></button>
+            </form>
+            <?php if ($orderAccess['enabled']): ?>
+                <details>
+                    <summary>关闭订单接口</summary>
+                    <?php form('channel_order_disable'); echo field('channel', $channelId), field('revision', $orderAccess['revision']); ?>
+                        <button class="secondary">确认关闭</button>
+                    </form>
+                </details>
+            <?php endif; ?>
+        </div>
+    </section>
+<?php endif; ?>

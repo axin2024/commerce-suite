@@ -32,7 +32,10 @@ try {
             <tbody>
                 <?php foreach ($history['rows'] as $entry): ?>
                     <tr><th scope="row">#<?= e($entry['id']) ?></th><td>#<?= e($entry['order_id']) ?></td>
-                        <td><?= e($entry['placed_at']) ?></td><td><?= $entry['channel'] === 'web' ? '快递配送' : '门店自提' ?></td>
+                        <td><?= e($entry['placed_at']) ?></td><td><?= $entry['channel'] === 'web' ? '快递配送' : '门店自提' ?>
+                            <?php if ($entry['source_channel'] !== null): ?>
+                                <br><span class="muted"><?= e($entry['source_channel']) ?> · <?= e($entry['source_reference']) ?></span>
+                            <?php endif; ?></td>
                         <td><?= badge($entry['status']) ?></td><td><?= cash($entry['total']) ?></td><td><?= cash($entry['shipping']) ?></td>
                         <td><?= isset($entry['freight_policy_revision_id']) ? '#' . e($entry['freight_policy_revision_id'])
                             : ($entry['channel'] === 'web' ? '默认' : '—') ?></td></tr>

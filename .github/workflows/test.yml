@@ -87,6 +87,35 @@ jobs:
             sleep 1
           done
           python3 tests/catalog_channel_web.py
+      - name: Run external order HTTP and shared stock checks
+        env:
+          COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
+          COMMERCE_PAYMENT_EXTENSION: ${{ github.workspace }}/examples/payment-bridge.php
+          COMMERCE_CHECKOUT_CHANNEL: bridge_v1
+          COMMERCE_BRIDGE_CHECKOUT_URL: https://checkout.example.test/pay
+          COMMERCE_BRIDGE_CHECKOUT_SECRET: test-only-bridge-checkout-signing-key
+          COMMERCE_BRIDGE_WEBHOOK_SECRET: test-only-bridge-receipt-signing-key
+          COMMERCE_CARRIER_EXTENSION: ${{ github.workspace }}/examples/carrier-bridge.php
+          COMMERCE_CARRIER_WEBHOOK_SECRET: test-only-carrier-event-signing-key
+          COMMERCE_CHANNEL_TEST_SECOND_URL: http://127.0.0.1:8081
+        run: |
+          php -r 'require "src/bootstrap.php"; database()->exec("CREATE DATABASE commerce_external_orders_test CHARACTER SET utf8mb4");'
+          export COMMERCE_DSN="${COMMERCE_DSN/commerce_suite_test/commerce_external_orders_test}"
+          php bin/commerce.php migrate
+          php bin/commerce.php seed
+          export APP_DEMO=0
+          php -S 127.0.0.1:8080 -t public > /tmp/commerce-channel-orders-8080.log 2>&1 &
+          first=$!
+          php -S 127.0.0.1:8081 -t public > /tmp/commerce-channel-orders-8081.log 2>&1 &
+          second=$!
+          trap 'kill "$first" "$second"' EXIT
+          for port in 8080 8081; do
+            for attempt in {1..10}; do
+              if curl --fail --silent --max-time 3 "http://127.0.0.1:$port/health.php"; then break; fi
+              sleep 1
+            done
+          done
+          python3 tests/channel_order_web.py
       - name: Run payment channel and carrier HTTP checks
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
 require_once __DIR__ . '/ChannelCatalogOperations.php';
+require_once __DIR__ . '/ChannelOrderOperations.php';
 require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PreorderOperations.php';
@@ -27,6 +28,7 @@ final class Commerce
 {
     use CatalogOperations;
     use ChannelCatalogOperations;
+    use ChannelOrderOperations;
     use InventoryOperations;
     use PickupOperations;
     use PreorderOperations;
@@ -483,7 +485,7 @@ final class Commerce
     }
 
     private function priceCart(
-        int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations, array $preorders,
+        ?int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations, array $preorders,
         int $points,
     ): array {
         $pickup = $channel === 'store';
@@ -495,8 +497,9 @@ final class Commerce
         if (array_diff_key($preorders, $cart)) {
             throw new RuleViolation('预售批次与当前商品不符，请刷新。');
         }
-        $member = $this->one('SELECT member_level FROM users WHERE id=?' . ($lock ? ' FOR SHARE' : ''), [$buyer]);
-        $hasMemberPrice = $member['member_level'] === 'plus';
+        $member = $buyer === null ? null
+            : $this->one('SELECT member_level FROM users WHERE id=?' . ($lock ? ' FOR SHARE' : ''), [$buyer]);
+        $hasMemberPrice = ($member['member_level'] ?? null) === 'plus';
         ksort($cart, SORT_NUMERIC);
         $items = $shops = [];
         foreach ($cart as $id => $quantity) {
@@ -559,12 +562,13 @@ final class Commerce
         if ($pickup && count($shops) !== count($pickupLocations)) {
             throw new RuleViolation('自提门店选择与当前购物车不符，请刷新。');
         }
-        $offer = $this->pricePromotion($buyer, $items, $coupon, $lock);
+        $offer = $buyer === null ? ['promotion' => null, 'prices' => [], 'parts' => []]
+            : $this->pricePromotion($buyer, $items, $coupon, $lock);
         $subtotal = $memberSavings = 0;
         $discount = array_sum($offer['parts']);
         $goods = [];
         foreach ($items as $id => &$item) {
-            $item['unit_price'] = $offer['prices'][$id];
+            $item['unit_price'] = $offer['prices'][$id] ?? $item['unit_price'];
             $item['discount'] = $offer['parts'][$id] ?? 0;
             $subtotal += $item['unit_price'] * $item['quantity'];
             $memberSavings += ($item['list_price'] - $item['unit_price']) * $item['quantity'];
@@ -581,7 +585,7 @@ final class Commerce
             }
             unset($shop);
         }
-        $loyalty = $this->loyaltyQuote($buyer, $points, $goods, $lock);
+        $loyalty = $buyer === null ? null : $this->loyaltyQuote($buyer, $points, $goods, $lock);
         if ($loyalty !== null) {
             foreach ($loyalty['parts'] as $id => $spent) {
                 $earned = intdiv(($goods[$id] - $spent) * $loyalty['rate'], 100);
@@ -690,49 +694,9 @@ final class Commerce
             if ($current['total'] > 0 && $this->paymentChannels->checkoutProvider === null && !demoEnabled()) {
                 throw new RuleViolation('结账暂未配置支付渠道，请联系平台。');
             }
-            $loyalty = $current['loyalty'] ?? null;
-            $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
-                promotion_revision_id,loyalty_revision_id,points_spent,points_earned,payment_provider,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
-                $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
-                $current['total'], $current['destination'], bin2hex(random_bytes(16)), $current['promotion']['revision_id'] ?? null,
-                $loyalty['revision_id'] ?? null, $loyalty['spent'] ?? 0, $loyalty['earned'] ?? 0,
-                $current['total'] > 0 ? $this->paymentChannels->checkoutProvider : null,
-            ]);
-            if ($current['coupon'] !== null) {
-                $this->query('UPDATE coupon_claims SET order_id=? WHERE buyer_id=? AND promotion_id=?',
-                    [$order, $buyer, $current['coupon']]);
-            }
-            $merchantOrders = [];
-            foreach ($current['shops'] as $shop => $totals) {
-                $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders
-                    (order_id,shop_id,total,shipping,placed_at,freight_policy_revision_id)
-                    SELECT id,?,?,?,created_at,? FROM orders WHERE id=?',
-                    [$shop, $totals['total'], $totals['shipping'], $totals['freight_policy_revision_id'] ?? null, $order]);
-                if (isset($totals['pickup'])) {
-                    $location = $totals['pickup'];
-                    $this->query('INSERT INTO order_pickups (merchant_order_id,pickup_location_id,location_name,location_address)
-                        VALUES (?,?,?,?)', [$merchantOrders[$shop], $location['id'], $location['name'], $location['address']]);
-                }
-            }
-            foreach ($current['items'] as $product => $item) {
-                $line = $this->insert('INSERT INTO order_items
-                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price,
-                     points_spent,points_earned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                    [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
-                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price'],
-                        $item['points_spent'] ?? 0, $item['points_earned'] ?? 0]);
-                if (isset($item['preorder'])) {
-                    $this->reservePreorder($line, $item['preorder']['id'], $item['quantity']);
-                } else {
-                    $this->reserveInventory($line, $product, $item['allocation']);
-                }
-            }
+            $order = $this->storeOrder($buyer, $current);
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);
-            }
-            if ($loyalty !== null) {
-                $this->reserveOrderPoints($order, $buyer, $loyalty);
             }
             $this->query('UPDATE quotes SET order_id=? WHERE token=?', [$order, $token]);
             $this->audit($buyer, 'order.placed', $order, ['channel' => $current['channel'], 'total' => $current['total']]);
@@ -741,6 +705,52 @@ final class Commerce
             }
             return $order;
         });
+    }
+
+    // The calling transaction owns the shop, product and allocation locks.
+    private function storeOrder(int $buyer, array $current): int
+    {
+        $loyalty = $current['loyalty'] ?? null;
+        $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
+            promotion_revision_id,loyalty_revision_id,points_spent,points_earned,payment_provider,expires_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
+            $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
+            $current['total'], $current['destination'], bin2hex(random_bytes(16)), $current['promotion']['revision_id'] ?? null,
+            $loyalty['revision_id'] ?? null, $loyalty['spent'] ?? 0, $loyalty['earned'] ?? 0,
+            $current['total'] > 0 ? $this->paymentChannels->checkoutProvider : null,
+        ]);
+        if ($current['coupon'] !== null) {
+            $this->query('UPDATE coupon_claims SET order_id=? WHERE buyer_id=? AND promotion_id=?', [$order, $buyer, $current['coupon']]);
+        }
+        $merchantOrders = [];
+        foreach ($current['shops'] as $shop => $totals) {
+            $merchantOrders[$shop] = $this->insert('INSERT INTO merchant_orders
+                (order_id,shop_id,total,shipping,placed_at,freight_policy_revision_id)
+                SELECT id,?,?,?,created_at,? FROM orders WHERE id=?',
+                [$shop, $totals['total'], $totals['shipping'], $totals['freight_policy_revision_id'] ?? null, $order]);
+            if (isset($totals['pickup'])) {
+                $location = $totals['pickup'];
+                $this->query('INSERT INTO order_pickups (merchant_order_id,pickup_location_id,location_name,location_address)
+                    VALUES (?,?,?,?)', [$merchantOrders[$shop], $location['id'], $location['name'], $location['address']]);
+            }
+        }
+        foreach ($current['items'] as $product => $item) {
+            $line = $this->insert('INSERT INTO order_items
+                (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price,
+                 points_spent,points_earned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
+                    $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price'],
+                    $item['points_spent'] ?? 0, $item['points_earned'] ?? 0]);
+            if (isset($item['preorder'])) {
+                $this->reservePreorder($line, $item['preorder']['id'], $item['quantity']);
+            } else {
+                $this->reserveInventory($line, $product, $item['allocation']);
+            }
+        }
+        if ($loyalty !== null) {
+            $this->reserveOrderPoints($order, $buyer, $loyalty);
+        }
+        return $order;
     }
 
     public function demoPay(int $buyer, int $orderId, string $reference, int $amount): int

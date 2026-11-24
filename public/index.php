@@ -348,6 +348,18 @@ try {
                     }
                     $app->setCatalogChannelListing($id, $channel, trim(input('sku')), $enabled === '1', number('revision', 0));
                     break;
+                case 'channel_order_issue':
+                case 'channel_order_disable':
+                    $next = 'sales_channels';
+                    $channel = number('channel');
+                    $nextParams = ['channel' => $channel];
+                    $token = $app->changeChannelOrderAccess($id, $channel, number('revision', 0), $action === 'channel_order_disable');
+                    if ($token === null) {
+                        unset($_SESSION['channel_order_credential']);
+                    } else {
+                        $_SESSION['channel_order_credential'] = ['id' => $channel, 'token' => $token];
+                    }
+                    break;
                 case 'member_level':
                     $app->setMemberLevel($id, input('email'), input('level'));
                     break;

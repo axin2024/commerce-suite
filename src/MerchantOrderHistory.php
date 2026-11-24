@@ -36,8 +36,11 @@ trait MerchantOrderHistory
             array_push($params, $match[1], $match[1], (int) $match[2]);
         }
         $limit = self::ORDER_HISTORY_PAGE_SIZE;
-        $rows = $this->rows('SELECT m.id,m.order_id,m.placed_at,m.status,m.total,m.shipping,m.freight_policy_revision_id,o.channel
+        $rows = $this->rows('SELECT m.id,m.order_id,m.placed_at,m.status,m.total,m.shipping,m.freight_policy_revision_id,o.channel,
+            c.code AS source_channel,co.reference AS source_reference
             FROM merchant_orders m JOIN orders o ON o.id=m.order_id
+            LEFT JOIN channel_orders co ON co.order_id=m.order_id
+            LEFT JOIN catalog_channels c ON c.id=co.channel_id AND c.shop_id=m.shop_id
             WHERE m.shop_id=? AND m.placed_at>=? AND m.placed_at<?' . $cursor . '
             ORDER BY m.placed_at DESC,m.id DESC LIMIT ' . ($limit + 1), $params);
         $next = null;
