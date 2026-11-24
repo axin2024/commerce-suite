@@ -555,10 +555,10 @@ final class Commerce
             if ($snapshot != $current) {
                 throw new RuleViolation('商品或价格已变化，请重新报价。');
             }
-            $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,expires_at)
-                VALUES (?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
+            $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
                 $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
-                $current['total'], $current['destination'],
+                $current['total'], $current['destination'], bin2hex(random_bytes(16)),
             ]);
             $merchantOrders = [];
             foreach ($current['shops'] as $shop => $totals) {
@@ -606,9 +606,9 @@ final class Commerce
             if (!$order || (int) $order['total'] !== $amount) {
                 throw new RuleViolation('订单或支付金额无效。');
             }
-            $paid = $this->one('SELECT id,reference FROM payments WHERE order_id=?', [$orderId]);
+            $paid = $this->one('SELECT id,reference,provider FROM payments WHERE order_id=?', [$orderId]);
             if ($paid) {
-                if ($paid['reference'] !== $reference) {
+                if ($paid['provider'] !== 'demo' || $paid['reference'] !== $reference) {
                     throw new RuleViolation('该订单已使用其他流水支付。');
                 }
                 return (int) $paid['id'];
@@ -616,21 +616,125 @@ final class Commerce
             if ($order['status'] !== 'unpaid' || $order['expired']) {
                 throw new RuleViolation('该订单已失效。');
             }
-            try {
-                $payment = $this->insert('INSERT INTO payments (order_id,reference,amount) VALUES (?,?,?)',
-                    [$orderId, $reference, $amount]);
-            } catch (PDOException $error) {
-                if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
-                    throw new RuleViolation('支付流水已使用。');
-                }
-                throw $error;
-            }
-            $this->orderInventory($orderId, true);
-            $this->query("UPDATE orders SET status='paid' WHERE id=?", [$orderId]);
-            $this->query("UPDATE merchant_orders SET status='ready' WHERE order_id=?", [$orderId]);
-            $this->audit($buyer, 'payment.recorded', $orderId, ['payment_id' => $payment, 'amount' => $amount]);
-            return $payment;
+            return $this->confirmPayment($orderId, $reference, $amount, 'demo', $buyer);
         });
+    }
+
+    private function confirmPayment(int $order, string $reference, int $amount, string $provider, ?int $actor): int
+    {
+        try {
+            $payment = $this->insert('INSERT INTO payments (order_id,reference,amount,provider) VALUES (?,?,?,?)',
+                [$order, $reference, $amount, $provider]);
+        } catch (PDOException $error) {
+            if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
+                throw new RuleViolation('支付流水已使用。');
+            }
+            throw $error;
+        }
+        $this->orderInventory($order, true);
+        $this->query("UPDATE orders SET status='paid' WHERE id=?", [$order]);
+        $this->query("UPDATE merchant_orders SET status='ready' WHERE order_id=?", [$order]);
+        $this->audit($actor, 'payment.recorded', $order, ['payment_id' => $payment, 'amount' => $amount, 'provider' => $provider]);
+        return $payment;
+    }
+
+    public static function validSandboxFields(string $token, string $reference, string $currency, int $amount): bool
+    {
+        return preg_match('/^[a-f0-9]{32}$/D', $token) === 1
+            && preg_match('/^[a-z0-9_-]{1,80}$/iD', $reference) === 1
+            && preg_match('/^[A-Z]{3}$/D', $currency) === 1
+            && $amount >= 1 && $amount <= 1_000_000_000_000;
+    }
+
+    public function recordSandboxReceipt(string $token, string $reference, string $currency, int $amount, string $digest): array
+    {
+        if (!demoEnabled() || !self::validSandboxFields($token, $reference, $currency, $amount)
+            || !preg_match('/^[a-f0-9]{64}$/D', $digest)) {
+            throw new RuleViolation('支付回执格式无效或沙箱未启用。');
+        }
+        return $this->transaction(function () use ($token, $reference, $currency, $amount, $digest): array {
+            $this->query('INSERT INTO payment_receipts (reference,payment_token,currency,amount,payload_sha256)
+                VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id', [$reference, $token, $currency, $amount, $digest]);
+            $receipt = $this->one('SELECT * FROM payment_receipts WHERE reference=? FOR UPDATE', [$reference]);
+            if (!hash_equals($receipt['payload_sha256'], $digest) || $receipt['payment_token'] !== $token
+                || $receipt['currency'] !== $currency || (int) $receipt['amount'] !== $amount) {
+                throw new RuleViolation('该渠道流水对应的回执内容已存在。');
+            }
+            $id = (int) $receipt['id'];
+            if ($receipt['status'] !== 'processing') {
+                return $this->receiptResult($id, $receipt);
+            }
+
+            $order = $this->one('SELECT id,status,total,expires_at<=UTC_TIMESTAMP() AS expired
+                FROM orders WHERE payment_token=? FOR UPDATE', [$token]);
+            $orderId = $order ? (int) $order['id'] : null;
+            $payment = null;
+            $reason = null;
+            switch (true) {
+                case !$order:
+                    $status = 'needs_review';
+                    $reason = 'unknown_intent';
+                    break;
+                case $currency !== 'CNY' || (int) $order['total'] !== $amount:
+                    $status = 'needs_review';
+                    $reason = 'amount_or_currency_mismatch';
+                    break;
+                case $order['status'] === 'paid':
+                    $status = 'refund_required';
+                    $reason = 'duplicate_charge';
+                    break;
+                case $order['status'] === 'cancelled' || $order['expired']:
+                    if ($order['status'] === 'unpaid') {
+                        $this->closeUnpaidOrder($orderId, null, true);
+                    }
+                    $status = 'refund_required';
+                    $reason = 'late_capture';
+                    break;
+                default:
+                    $status = 'accepted';
+                    $payment = $this->confirmPayment($orderId, $reference, $amount, 'sandbox', null);
+                    break;
+            }
+            $this->query('UPDATE payment_receipts SET status=?,failure_code=?,order_id=?,payment_id=? WHERE id=?',
+                [$status, $reason, $orderId, $payment, $id]);
+            if ($reason !== null) {
+                $this->audit(null, 'payment.receipt_exception', $id, ['reason' => $reason, 'order_id' => $orderId]);
+            }
+            return $this->receiptResult($id, ['status' => $status, 'payment_id' => $payment]);
+        });
+    }
+
+    private function receiptResult(int $id, array $receipt): array
+    {
+        return ['receipt_id' => $id, 'status' => $receipt['status'],
+            'payment_id' => $receipt['payment_id'] === null ? null : (int) $receipt['payment_id']];
+    }
+
+    public function recordSandboxRefund(int $finance, int $receipt, string $refundReference): void
+    {
+        $this->actor($finance, 'finance');
+        if (!demoEnabled() || !preg_match('/^[a-z0-9_-]{1,80}$/iD', $refundReference)) {
+            throw new RuleViolation('请填写有效的沙箱退款回执号。');
+        }
+        try {
+            $this->transaction(function () use ($finance, $receipt, $refundReference): void {
+                $row = $this->one('SELECT status,refund_reference FROM payment_receipts WHERE id=? FOR UPDATE', [$receipt]);
+                if ($row && $row['status'] === 'refunded' && $row['refund_reference'] === $refundReference) {
+                    return;
+                }
+                if (!$row || $row['status'] !== 'refund_required') {
+                    throw new RuleViolation('回执不存在或当前无需登记退款。');
+                }
+                $this->query("UPDATE payment_receipts SET status='refunded',refund_reference=?,resolved_at=UTC_TIMESTAMP(),
+                    resolved_by=? WHERE id=?", [$refundReference, $finance, $receipt]);
+                $this->audit($finance, 'payment.exception_refunded', $receipt, ['reference' => $refundReference]);
+            });
+        } catch (PDOException $error) {
+            if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
+                throw new RuleViolation('沙箱退款回执号已使用。');
+            }
+            throw $error;
+        }
     }
 
     public function cancel(int $orderId, ?int $buyer = null): bool
@@ -647,12 +751,17 @@ final class Commerce
             if ($order['status'] !== 'unpaid' || ($buyer === null && !$order['expired'])) {
                 return false;
             }
-            $this->orderInventory($orderId, false);
-            $this->query("UPDATE orders SET status='cancelled' WHERE id=?", [$orderId]);
-            $this->query("UPDATE merchant_orders SET status='cancelled' WHERE order_id=?", [$orderId]);
-            $this->audit($buyer, 'order.cancelled', $orderId, ['expired' => (bool) $order['expired']]);
+            $this->closeUnpaidOrder($orderId, $buyer, (bool) $order['expired']);
             return true;
         });
+    }
+
+    private function closeUnpaidOrder(int $order, ?int $actor, bool $expired): void
+    {
+        $this->orderInventory($order, false);
+        $this->query("UPDATE orders SET status='cancelled' WHERE id=?", [$order]);
+        $this->query("UPDATE merchant_orders SET status='cancelled' WHERE order_id=?", [$order]);
+        $this->audit($actor, 'order.cancelled', $order, ['expired' => $expired]);
     }
 
     public function expireOrders(): int

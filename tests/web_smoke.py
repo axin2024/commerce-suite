@@ -1,8 +1,13 @@
 """Exercise the web flow against a freshly seeded local demo."""
 
 import http.cookiejar
+import hashlib
+import hmac
+import json
+import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,6 +15,7 @@ from uuid import uuid4
 
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080"
+SANDBOX_SECRET = os.environ.get("COMMERCE_SANDBOX_WEBHOOK_SECRET")
 if urllib.parse.urlsplit(BASE).hostname not in ("127.0.0.1", "localhost", "::1"):
     raise SystemExit("Run this check against a local demo instance.")
 
@@ -41,6 +47,24 @@ def extract(html, name):
     if not match:
         raise AssertionError(f"missing {name}")
     return match.group(1)
+
+
+def webhook(payload, timestamp=None, signature=None):
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    timestamp = str(int(time.time()) if timestamp is None else timestamp)
+    if signature is None:
+        signature = hmac.new(SANDBOX_SECRET.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(BASE + "/payment-webhook.php", data=body, headers={
+        "Content-Type": "application/json",
+        "X-Commerce-Timestamp": timestamp,
+        "X-Commerce-Signature": signature,
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as error:
+        with error:
+            return error.code, json.load(error)
 
 
 buyer, north, pond, finance, admin = (Session() for _ in range(5))
@@ -79,7 +103,26 @@ assert "¥180.00" in quote
 order = buyer.submit("/?page=cart", "place", token=extract(quote, "token"))
 order_id = extract(order, "order")
 assert "购物车为空" in second_device.load("/?page=cart")
-paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
+if SANDBOX_SECRET:
+    token_match = re.search(r"沙箱支付意图 <code>([a-f0-9]{32})</code>", order)
+    assert token_match, "missing sandbox payment intent"
+    payload = {"payment_token": token_match[1], "reference": f"web-{uuid4().hex}", "currency": "CNY", "amount": 18000}
+    assert webhook(payload, signature="0" * 64) == (401, {"error": "invalid_signature"})
+    assert webhook(payload, timestamp=int(time.time()) - 600) == (401, {"error": "invalid_signature"})
+    status, accepted = webhook(payload)
+    assert status == 200 and accepted["status"] == "accepted" and accepted["payment_id"]
+    assert webhook(payload) == webhook(payload) == (200, accepted)
+    assert webhook({**payload, "amount": 18001}) == (409, {"error": "receipt_conflict"})
+    status, duplicate = webhook({**payload, "reference": f"duplicate-{uuid4().hex}"})
+    assert status == 200 and duplicate["status"] == "refund_required"
+    exceptions = finance.load("/?page=platform")
+    assert "同订单重复实收" in exceptions
+    assert str(duplicate["receipt_id"]) == extract(exceptions, "receipt")
+    assert "已登记退回" in finance.submit("/?page=platform", "sandbox_refund", receipt=duplicate["receipt_id"],
+                                          reference=f"refund-{uuid4().hex}")
+    paid = buyer.load("/?page=orders")
+else:
+    paid = buyer.submit("/?page=orders", "pay", order=order_id, amount="18000")
 assert "已付款" in paid and "¥108.00" in paid and "¥72.00" in paid
 for merchant in (north, pond):
     merchant_page = merchant.load("/?page=merchant")

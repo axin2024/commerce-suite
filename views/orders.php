@@ -12,6 +12,9 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
             <strong class="amount"><?= cash($order['total']) ?></strong>
         </div>
         <p class="muted"><?= $order['channel'] === 'web' ? '配送' : '自提' ?> · <?= e($order['destination']) ?> · <?= e($order['created_at']) ?> UTC</p>
+        <?php if (sandboxWebhookSecret() !== null): ?>
+            <p class="muted">沙箱支付意图 <code><?= e($order['payment_token']) ?></code></p>
+        <?php endif; ?>
         <?php if ($order['status'] === 'unpaid'): ?>
             <div class="inline">
                 <?php if (demoEnabled()): form('pay'); echo field('order', $order['id']), field('amount', $order['total']); ?>

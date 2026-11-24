@@ -25,3 +25,9 @@ function demoEnabled(): bool
 {
     return getenv('APP_DEMO') === '1';
 }
+
+function sandboxWebhookSecret(): ?string
+{
+    $secret = getenv('COMMERCE_SANDBOX_WEBHOOK_SECRET');
+    return demoEnabled() && is_string($secret) && strlen($secret) >= 32 ? $secret : null;
+}

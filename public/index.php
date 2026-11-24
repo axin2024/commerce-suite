@@ -228,6 +228,9 @@ try {
                 case 'settle':
                     $app->settle($id, number('shop'));
                     break;
+                case 'sandbox_refund':
+                    $app->recordSandboxRefund($id, number('receipt'), input('reference'));
+                    break;
                 default:
                     throw new RuleViolation('未知操作。');
             }

@@ -237,7 +237,46 @@ $newQuote = $app->quote($buyer, [$b => 1], 'store', 'Store A');
 $newOrder = $app->place($buyer, $newQuote['token']);
 denied(fn() => $app->demoPay($buyer, $newOrder, "pay-$tag", 8100), 'gateway reference unique across orders');
 same(true, $app->cancel($newOrder, $buyer), 'buyer can release an unpaid order');
+
+$intent = static fn(int $id): string => $app->rows('SELECT payment_token FROM orders WHERE id=?', [$id])[0]['payment_token'];
+$receipt = static function (string $token, string $reference, int $amount, string $currency = 'CNY') use ($app): array {
+    $digest = hash('sha256', json_encode([$token, $reference, $amount, $currency], JSON_THROW_ON_ERROR));
+    return $app->recordSandboxReceipt($token, $reference, $currency, $amount, $digest);
+};
+$resaleQuote = $app->quote($otherBuyer, [$race => 1], 'store', 'Store A');
+$resaleOrder = $app->place($otherBuyer, $resaleQuote['token']);
+$wrongReceipt = $receipt($intent($resaleOrder), "currency-$tag", 200, 'USD');
+same('needs_review', $wrongReceipt['status'], 'currency discrepancy requires review');
+same('unpaid', $app->rows('SELECT status FROM orders WHERE id=?', [$resaleOrder])[0]['status'], 'currency mismatch leaves order unpaid');
+same('needs_review', $receipt(str_repeat('0', 32), "unknown-$tag", 200)['status'], 'unknown payment intent retained for review');
+$accepted = $receipt($intent($resaleOrder), "callback-$tag", 200);
+same('accepted', $accepted['status'], 'signed receipt workflow accepts matching capture');
+same($accepted, $receipt($intent($resaleOrder), "callback-$tag", 200), 'second delivery returns original payment');
+same($accepted, $receipt($intent($resaleOrder), "callback-$tag", 200), 'third delivery returns original payment');
+denied(fn() => $receipt($intent($resaleOrder), "callback-$tag", 201), 'same channel reference cannot change payload');
+same(1, (int) $app->rows('SELECT COUNT(*) AS total FROM payments WHERE order_id=?', [$resaleOrder])[0]['total'],
+    'three identical callbacks record exactly one payment');
+$duplicate = $receipt($intent($resaleOrder), "overpaid-$tag", 200);
+same('refund_required', $duplicate['status'], 'second capture with distinct reference requires refund');
+$late = $receipt($intent($expired), "late-$tag", 200);
+same('refund_required', $late['status'], 'late capture after resale requires refund');
+same('cancelled', $app->rows('SELECT status FROM orders WHERE id=?', [$expired])[0]['status'], 'late capture cannot revive cancelled order');
+same([0, 0], array_map('intval', array_values($app->rows('SELECT stock,reserved FROM products WHERE id=?', [$race])[0])),
+    'late capture leaves resold inventory unchanged');
+denied(fn() => $app->recordSandboxRefund($admin, $late['receipt_id'], "refund-$tag"), 'only finance records exception refunds');
+$app->recordSandboxRefund($finance, $late['receipt_id'], "refund-$tag");
+$app->recordSandboxRefund($finance, $late['receipt_id'], "refund-$tag");
+same('refunded', $receipt($intent($expired), "late-$tag", 200)['status'], 'late capture replay reports current refund progress');
+denied(fn() => $app->recordSandboxRefund($finance, $duplicate['receipt_id'], "refund-$tag"), 'refund reference cannot resolve two receipts');
+
+$unprocessed = $app->place($buyer, $app->quote($buyer, [$b => 1], 'store', 'Store A')['token']);
+$db->prepare('UPDATE orders SET expires_at=UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE id=?')->execute([$unprocessed]);
+same('refund_required', $receipt($intent($unprocessed), "expires-before-worker-$tag", 8100)['status'],
+    'late receipt before worker recorded for refund');
+same(false, $app->cancel($unprocessed), 'late receipt closed expired order and released its hold');
+same(0, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$b])[0]['reserved'], 'late receipt releases expired stock once');
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
+denied(fn() => $receipt($intent($resaleOrder), "disabled-$tag", 200), 'webhook processing requires sandbox opt-in');
 
 echo "$checks integration checks passed.\n";

@@ -11,6 +11,7 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
 <div class="heading"><h1>平台运营</h1></div>
 <div class="tabs">
     <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="#batches">结算批次</a>
+    <?php if (demoEnabled()): ?><a href="#receipts">沙箱支付回执</a><?php endif; ?>
     <?php if ($role === 'admin'): ?><a href="#audit">审计记录</a><?php endif; ?>
 </div>
 <section class="panel" id="shops">
@@ -79,6 +80,36 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
             <strong><?= cash($batch['amount']) ?></strong></div>
     <?php endforeach; ?>
 </section>
+<?php if (demoEnabled()): ?>
+<section class="panel" id="receipts">
+    <h2>沙箱支付回执</h2>
+    <?php
+    $receiptStates = ['accepted' => '已入账', 'refund_required' => '待原路退回',
+        'needs_review' => '待核对', 'refunded' => '已登记退回'];
+    $receiptReasons = ['unknown_intent' => '找不到支付意图', 'amount_or_currency_mismatch' => '金额或币种差异',
+        'duplicate_charge' => '同订单重复实收', 'late_capture' => '订单关闭后实收'];
+    $receipts = $app->rows('SELECT id,reference,status,order_id,currency,amount,failure_code,refund_reference,received_at
+        FROM payment_receipts ORDER BY id DESC LIMIT 100');
+    ?>
+    <?php if (!$receipts): ?><p class="muted">暂无外部沙箱回执。</p><?php endif; ?>
+    <?php foreach ($receipts as $receipt): ?>
+        <div class="record">
+            <div><strong><?= e($receipt['reference']) ?> · <?= e($receiptStates[$receipt['status']]) ?></strong>
+                <p class="muted"><?= e($receipt['order_id'] ? '订单 #' . $receipt['order_id'] : '待匹配订单') ?> ·
+                    <?= e($receipt['currency']) ?> <?= e($receipt['amount']) ?>（最小货币单位）
+                    · <?= e($receipt['received_at']) ?> UTC</p>
+                <?php if ($receipt['failure_code']): ?><p><?= e($receiptReasons[$receipt['failure_code']]) ?></p><?php endif; ?>
+                <?php if ($receipt['refund_reference']): ?><p>退款回执 <?= e($receipt['refund_reference']) ?></p><?php endif; ?>
+            </div>
+            <?php if ($role === 'finance' && $receipt['status'] === 'refund_required'):
+                form('sandbox_refund'); echo field('receipt', $receipt['id']); ?>
+                <label>退款回执号<input name="reference" maxlength="80" required></label>
+                <button class="secondary">登记渠道退款</button></form>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+</section>
+<?php endif; ?>
 <?php if ($role === 'admin'): ?>
     <section class="panel" id="audit">
         <h2>审计记录</h2>
