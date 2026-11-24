@@ -3,19 +3,15 @@
 declare(strict_types=1);
 
 require __DIR__ . '/../src/bootstrap.php';
+require __DIR__ . '/../src/Migrator.php';
 
 try {
     $db = database();
     $app = new Commerce($db);
     switch ($argv[1] ?? '') {
         case 'migrate':
-            $schema = file_get_contents(__DIR__ . '/../database/schema.sql');
-            foreach (explode(';', $schema) as $statement) {
-                if (trim($statement) !== '') {
-                    $db->exec($statement);
-                }
-            }
-            echo "Schema installed.\n";
+            $applied = (new Migrator($db))->run(__DIR__ . '/../database');
+            echo $applied ? 'Applied: ' . implode(', ', $applied) . PHP_EOL : "Schema is current.\n";
             break;
         case 'operator':
             $password = getenv('COMMERCE_OPERATOR_PASSWORD') ?: '';
@@ -33,8 +29,8 @@ try {
             $admin = $app->provisionOperator('admin@example.test', $password, 'admin');
             $app->provisionOperator('finance@example.test', $password, 'finance');
             $app->register('buyer@example.test', $password);
-            $north = $app->register('north@example.test', $password, '北仓选物');
-            $pond = $app->register('pond@example.test', $password, '池畔工房');
+            $north = $app->register('north@example.test', $password, '北仓选物', '北仓选物演示商行');
+            $pond = $app->register('pond@example.test', $password, '池畔工房', '池畔工房演示商行');
             foreach ([$north, $pond] as $merchant) {
                 $app->reviewShop($admin, (int) $app->profile($merchant)['shop_id'], true);
             }

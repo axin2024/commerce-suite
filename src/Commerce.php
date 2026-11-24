@@ -6,6 +6,14 @@ final class RuleViolation extends RuntimeException {}
 
 final class Commerce
 {
+    public const AGREEMENT_VERSION = 'marketplace-1';
+    public const STAFF_POSITIONS = [
+        'catalog' => '商品运营',
+        'fulfillment' => '订单履约',
+        'support' => '售后客服',
+        'finance' => '店铺财务',
+    ];
+
     public function __construct(private readonly PDO $db) {}
 
     public function rows(string $sql, array $params = []): array
@@ -69,12 +77,37 @@ final class Commerce
 
     public function profile(int $id): array
     {
-        return $this->actor($id);
+        $actor = $this->actor($id);
+        if ($actor['role'] !== 'merchant') {
+            return $actor;
+        }
+        $member = $this->one('SELECT position,enabled,access_version FROM shop_members WHERE user_id=? AND shop_id=?',
+            [$id, $actor['shop_id']]);
+        return $actor + ['position' => $member['position'] ?? null, 'enabled' => !empty($member['enabled']),
+            'access_version' => (int) ($member['access_version'] ?? 0)];
+    }
+
+    public static function canManage(array $actor, string $position): bool
+    {
+        return !empty($actor['enabled']) && in_array($actor['position'], ['owner', $position], true);
+    }
+
+    private function shopActor(int $id, string $position): array
+    {
+        $actor = $this->one("SELECT u.id,m.shop_id,m.position,m.enabled FROM users u
+            JOIN shop_members m ON m.user_id=u.id AND m.shop_id=u.shop_id
+            WHERE u.id=? AND u.role='merchant'" . ($this->db->inTransaction() ? ' FOR SHARE' : ''), [$id]);
+        if (!$actor || !self::canManage($actor, $position)) {
+            throw new RuleViolation('当前店铺岗位无权执行该操作。');
+        }
+        return $actor;
     }
 
     public function authenticate(string $email, string $password): ?int
     {
-        $user = $this->one('SELECT id,password_hash FROM users WHERE email=?', [strtolower(trim($email))]);
+        $user = $this->one("SELECT u.id,u.password_hash FROM users u
+            LEFT JOIN shop_members m ON m.user_id=u.id AND m.shop_id=u.shop_id
+            WHERE u.email=? AND (u.role<>'merchant' OR m.enabled=1)", [strtolower(trim($email))]);
         return $user && password_verify($password, $user['password_hash']) ? (int) $user['id'] : null;
     }
 
@@ -88,20 +121,41 @@ final class Commerce
         return $email;
     }
 
-    public function register(string $email, string $password, string $shopName = ''): int
+    public function register(string $email, string $password, string $shopName = '', string $payee = ''): int
+    {
+        return $this->createAccount($email, $password, $shopName, $payee, null);
+    }
+
+    public function createPlatformShop(int $admin, string $email, string $password, string $shopName, string $payee): int
+    {
+        $this->actor($admin, 'admin');
+        if (trim($shopName) === '') {
+            throw new RuleViolation('请填写自营店铺名称。');
+        }
+        return $this->createAccount($email, $password, $shopName, $payee, $admin);
+    }
+
+    private function createAccount(string $email, string $password, string $shopName, string $payee, ?int $admin): int
     {
         $email = self::validateAccount($email, $password);
         $shopName = trim($shopName);
-        if (strlen($shopName) > 100) {
-            throw new RuleViolation('店铺名称过长。');
+        $payee = trim($payee);
+        if (strlen($shopName) > 100 || strlen($payee) > 160) {
+            throw new RuleViolation('店铺名称或收款主体名称过长。');
+        }
+        if ($shopName === '' && $payee !== '') {
+            throw new RuleViolation('请同时填写店铺名称。');
         }
         try {
-            return $this->transaction(function () use ($email, $password, $shopName): int {
-                $shop = $shopName === '' ? null : $this->insert('INSERT INTO shops (name) VALUES (?)', [$shopName]);
+            return $this->transaction(function () use ($email, $password, $shopName, $payee, $admin): int {
+                $shop = $shopName === '' ? null : $this->insert('INSERT INTO shops (name,kind,payee_name,agreement_version)
+                    VALUES (?,?,?,?)', [$shopName, $admin === null ? 'marketplace' : 'platform',
+                        $payee === '' ? null : $payee, $payee === '' ? null : self::AGREEMENT_VERSION]);
                 $id = $this->insert('INSERT INTO users (email,password_hash,role,shop_id) VALUES (?,?,?,?)',
                     [$email, password_hash($password, PASSWORD_DEFAULT), $shop ? 'merchant' : 'buyer', $shop]);
                 if ($shop) {
-                    $this->audit($id, 'shop.applied', $shop);
+                    $this->query("INSERT INTO shop_members (user_id,shop_id,position) VALUES (?,?,'owner')", [$id, $shop]);
+                    $this->audit($admin ?? $id, 'shop.applied', $shop, ['owner_id' => $id]);
                 }
                 return $id;
             });
@@ -126,20 +180,110 @@ final class Commerce
     {
         $this->actor($admin, 'admin');
         $this->transaction(function () use ($admin, $shop, $approve): void {
-            $status = $approve ? 'active' : 'rejected';
-            $changed = $this->query("UPDATE shops SET status=? WHERE id=? AND status='pending'", [$status, $shop]);
-            if (!$changed->rowCount()) {
+            $application = $this->one("SELECT kind,payee_name,agreement_version FROM shops
+                WHERE id=? AND status='pending' FOR UPDATE", [$shop]);
+            if (!$application) {
                 throw new RuleViolation('该店铺已处理或不存在。');
             }
-            $this->audit($admin, 'shop.reviewed', $shop, ['status' => $status]);
+            if ($approve && (!$application['payee_name'] || !$application['agreement_version'])) {
+                throw new RuleViolation('店主须先填写收款主体并确认结算协议。');
+            }
+            $status = $approve ? 'active' : 'rejected';
+            $this->query('UPDATE shops SET status=? WHERE id=?', [$status, $shop]);
+            $this->audit($admin, 'shop.reviewed', $shop, ['status' => $status] + $application);
         });
+    }
+
+    public function submitShopAgreement(int $owner, string $payee): void
+    {
+        $payee = trim($payee);
+        if ($payee === '' || strlen($payee) > 160) {
+            throw new RuleViolation('请填写有效的收款主体名称。');
+        }
+        $this->transaction(function () use ($owner, $payee): void {
+            $actor = $this->shopActor($owner, 'owner');
+            $shop = $this->one('SELECT status FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
+            if (!in_array($shop['status'], ['pending', 'rejected'], true)) {
+                throw new RuleViolation('已审核店铺的收款主体及协议不可直接变更。');
+            }
+            $this->query("UPDATE shops SET status='pending',payee_name=?,agreement_version=? WHERE id=?",
+                [$payee, self::AGREEMENT_VERSION, $actor['shop_id']]);
+            $this->audit($owner, 'shop.agreement_submitted', (int) $actor['shop_id'], ['version' => self::AGREEMENT_VERSION]);
+        });
+    }
+
+    public function setShopSuspended(int $admin, int $shop, bool $suspended, string $reason): void
+    {
+        $this->actor($admin, 'admin');
+        $reason = trim($reason);
+        if ($reason === '' || strlen($reason) > 250) {
+            throw new RuleViolation('请填写经营状态变更原因。');
+        }
+        $this->transaction(function () use ($admin, $shop, $suspended, $reason): void {
+            $from = $suspended ? 'active' : 'suspended';
+            $to = $suspended ? 'suspended' : 'active';
+            $update = $this->query('UPDATE shops SET status=? WHERE id=? AND status=?', [$to, $shop, $from]);
+            if (!$update->rowCount()) {
+                throw new RuleViolation('店铺状态已变化，请刷新后重试。');
+            }
+            $this->audit($admin, 'shop.status_changed', $shop, ['from' => $from, 'to' => $to, 'reason' => $reason]);
+        });
+    }
+
+    public function addShopMember(int $owner, string $email, string $password, string $position): int
+    {
+        $email = self::validateAccount($email, $password);
+        if (!isset(self::STAFF_POSITIONS[$position])) {
+            throw new RuleViolation('请选择有效的店铺岗位。');
+        }
+        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+        try {
+            return $this->transaction(function () use ($owner, $email, $passwordHash, $position): int {
+                $actor = $this->shopActor($owner, 'owner');
+                $id = $this->insert("INSERT INTO users (email,password_hash,role,shop_id) VALUES (?,?,'merchant',?)",
+                    [$email, $passwordHash, $actor['shop_id']]);
+                $this->query('INSERT INTO shop_members (user_id,shop_id,position) VALUES (?,?,?)',
+                    [$id, $actor['shop_id'], $position]);
+                $this->audit($owner, 'shop.member_added', (int) $actor['shop_id'], ['user_id' => $id, 'position' => $position]);
+                return $id;
+            });
+        } catch (PDOException $error) {
+            if ((int) ($error->errorInfo[1] ?? 0) === 1062) {
+                throw new RuleViolation('邮箱已注册。');
+            }
+            throw $error;
+        }
+    }
+
+    public function setShopMemberEnabled(int $owner, int $member, bool $enabled): void
+    {
+        $this->transaction(function () use ($owner, $member, $enabled): void {
+            $actor = $this->shopActor($owner, 'owner');
+            $target = $this->one("SELECT enabled FROM shop_members
+                WHERE user_id=? AND shop_id=? AND position<>'owner' FOR UPDATE", [$member, $actor['shop_id']]);
+            if (!$target) {
+                throw new RuleViolation('店铺成员不存在或不可停用。');
+            }
+            if ((bool) $target['enabled'] !== $enabled) {
+                $this->query('UPDATE shop_members SET enabled=?,access_version=access_version+1 WHERE user_id=?',
+                    [(int) $enabled, $member]);
+                $this->audit($owner, 'shop.member_access_changed', (int) $actor['shop_id'],
+                    ['user_id' => $member, 'enabled' => $enabled]);
+            }
+        });
+    }
+
+    public function merchantLedger(int $merchant): array
+    {
+        $actor = $this->shopActor($merchant, 'finance');
+        return $this->rows('SELECT id,merchant_order_id,kind,gross,commission,settlement_id,created_at
+            FROM ledger WHERE shop_id=? ORDER BY id DESC LIMIT 100', [$actor['shop_id']]);
     }
 
     public function saveProduct(
         int $merchant, int $id, string $sku, string $name, int $price, int $stock, string $status, ?int $version = null,
     ): int
     {
-        $actor = $this->actor($merchant, 'merchant');
         $sku = trim($sku);
         $name = trim($name);
         if (!preg_match('/^[a-z0-9_-]{1,64}$/iD', $sku) || $name === '' || strlen($name) > 160
@@ -148,9 +292,10 @@ final class Commerce
             throw new RuleViolation('请检查 SKU、名称、价格、库存和商品状态。');
         }
         try {
-            return $this->transaction(function () use ($actor, $merchant, $id, $sku, $name, $price, $stock, $status, $version): int {
+            return $this->transaction(function () use ($merchant, $id, $sku, $name, $price, $stock, $status, $version): int {
+                $actor = $this->shopActor($merchant, 'catalog');
                 $shop = $this->one('SELECT status FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
-                if (!$shop || $shop['status'] !== 'active') {
+                if (!$shop || !in_array($shop['status'], ['active', 'suspended'], true)) {
                     throw new RuleViolation('店铺通过审核后可维护商品。');
                 }
                 if ($id) {
@@ -221,7 +366,8 @@ final class Commerce
             }
             $product = $this->one("SELECT * FROM products WHERE id=? AND status='active'"
                 . ($lock ? ' FOR UPDATE' : ''), [$id]);
-            $shop = $product ? $this->one("SELECT id,commission_bps FROM shops WHERE id=? AND status='active'",
+            $shop = $product ? $this->one("SELECT id,commission_bps FROM shops WHERE id=? AND status='active'"
+                . ($lock ? ' FOR UPDATE' : ''),
                 [$product['shop_id']]) : null;
             if (!$shop || (int) $product['stock'] - (int) $product['reserved'] < $quantity) {
                 throw new RuleViolation('商品已下架或可用库存不足，请更新购物车。');
@@ -285,6 +431,15 @@ final class Commerce
                 throw new RuleViolation('报价已过期，请重新报价。');
             }
             $snapshot = json_decode($quote['snapshot'], true, flags: JSON_THROW_ON_ERROR);
+            $shopIds = array_keys($snapshot['shops']);
+            sort($shopIds, SORT_NUMERIC);
+            // Match catalog edits and shop suspension: lock shops before inventory.
+            foreach ($shopIds as $shop) {
+                $currentShop = $this->one('SELECT status FROM shops WHERE id=? FOR UPDATE', [$shop]);
+                if (($currentShop['status'] ?? null) !== 'active') {
+                    throw new RuleViolation('购物车内有店铺暂停营业，请更新购物车。');
+                }
+            }
             $current = $this->priceCart($snapshot['cart'], $snapshot['channel'], $snapshot['destination'], true);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
@@ -399,12 +554,12 @@ final class Commerce
 
     public function fulfill(int $merchant, int $id, string $tracking): void
     {
-        $actor = $this->actor($merchant, 'merchant');
         $tracking = trim($tracking);
         if ($tracking === '' || strlen($tracking) > 120) {
             throw new RuleViolation('请填写物流单号或自提核验编号。');
         }
-        $this->transaction(function () use ($actor, $merchant, $id, $tracking): void {
+        $this->transaction(function () use ($merchant, $id, $tracking): void {
+            $actor = $this->shopActor($merchant, 'fulfillment');
             $this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
             $order = $this->one('SELECT * FROM merchant_orders WHERE id=? AND shop_id=? FOR UPDATE',
                 [$id, $actor['shop_id']]);
@@ -459,8 +614,8 @@ final class Commerce
 
     public function decideRefund(int $merchant, int $id, bool $approve): int
     {
-        $actor = $this->actor($merchant, 'merchant');
-        return $this->transaction(function () use ($actor, $merchant, $id, $approve): int {
+        return $this->transaction(function () use ($merchant, $id, $approve): int {
+            $actor = $this->shopActor($merchant, 'support');
             $this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
             $refund = $this->one('SELECT r.*,i.merchant_order_id,i.quantity AS item_quantity,i.unit_price,
                 i.discount,i.commission,i.refunded_quantity

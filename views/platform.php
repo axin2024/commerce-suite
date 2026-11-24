@@ -15,16 +15,42 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
 </div>
 <section class="panel" id="shops">
     <h2>店铺管理</h2>
+    <?php if ($role === 'admin'): ?>
+        <details><summary>创建自营店铺</summary>
+            <?php form('platform_shop'); ?>
+            <div class="inputs">
+                <label>店铺名称<input name="shop" maxlength="100" required></label>
+                <label>收款主体<input name="payee" maxlength="160" required></label>
+                <label>负责人邮箱<input name="email" type="email" maxlength="190" required></label>
+                <label>初始密码<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="72" required></label>
+            </div>
+            <button>创建并提交审核</button></form>
+        </details>
+    <?php endif; ?>
     <?php if (!$shops): ?><p class="muted">暂无店铺。</p><?php endif; ?>
     <?php foreach ($shops as $shop): ?>
         <div class="record">
             <div><a href="/?page=platform&amp;shop=<?= e($shop['id']) ?>#ledger"><?= e($shop['name']) ?></a> <?= badge($shop['status']) ?>
-                <p class="muted">佣金 <?= e($shop['commission_bps'] / 100 . '%') ?> · 未结净额 <?= cash($shop['net']) ?> · <?= e($shop['entries']) ?> 笔</p></div>
-            <?php if ($shop['status'] === 'pending' && $role === 'admin'):
+                <p class="muted"><?= $shop['kind'] === 'platform' ? '平台自营' : '入驻商家' ?> · 佣金 <?= e($shop['commission_bps'] / 100 . '%') ?>
+                    · 未结净额 <?= cash($shop['net']) ?> · <?= e($shop['entries']) ?> 笔</p>
+                <?php if ($role === 'admin'): ?>
+                    <p>收款主体 <?= e($shop['payee_name'] ?? '未登记') ?> · 协议 <?= e($shop['agreement_version'] ?? '未确认') ?></p>
+                <?php endif; ?>
+            </div>
+            <?php if ($role === 'admin' && $shop['status'] === 'pending'):
                 form('review'); echo field('shop', $shop['id']); ?>
-                <div class="inline"><button name="decision" value="approve">通过</button>
-                    <button class="secondary" name="decision" value="reject">拒绝</button></div></form>
-            <?php elseif ($shop['entries'] && $shop['net'] >= 0):
+                <div class="inline"><?php if ($shop['agreement_version']): ?><button name="decision" value="approve">通过</button><?php endif; ?>
+                    <button class="secondary" name="decision" value="reject">拒绝</button></div>
+                </form>
+            <?php endif; ?>
+            <?php if ($role === 'admin' && in_array($shop['status'], ['active', 'suspended'], true)): ?>
+                <details><summary><?= $shop['status'] === 'active' ? '暂停营业' : '恢复营业' ?></summary>
+                    <?php form('shop_status'); echo field('shop', $shop['id']), field('decision', $shop['status'] === 'active' ? 'suspend' : 'resume'); ?>
+                    <label>原因<input name="reason" maxlength="250" required></label>
+                    <button class="secondary">确认变更</button></form>
+                </details>
+            <?php endif; ?>
+            <?php if ($shop['entries'] && $shop['net'] >= 0):
                 form('settle'); echo field('shop', $shop['id']); ?><button>生成结算批次</button></form>
             <?php endif; ?>
         </div>

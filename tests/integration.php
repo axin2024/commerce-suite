@@ -59,10 +59,40 @@ same($buyer, $app->authenticate("buyer-$tag@example.test", $pw), 'buyer login');
 same(null, $app->authenticate("buyer-$tag@example.test", 'wrong'), 'invalid password');
 denied(fn() => $app->reviewShop($finance, $northShop, true), 'finance cannot approve a merchant');
 denied(fn() => $app->saveProduct($north, 0, 'N-1', 'Demo', 12000, 1, 'active'), 'shop approval required');
+denied(fn() => $app->reviewShop($admin, $northShop, true), 'approval requires a payee and agreement');
+$app->reviewShop($admin, $northShop, false);
+$app->submitShopAgreement($north, '北仓选物商行');
+$app->submitShopAgreement($pond, '池畔早餐商行');
 $app->reviewShop($admin, $northShop, true);
 $app->reviewShop($admin, $pondShop, true);
 denied(fn() => $app->reviewShop($admin, $northShop, false), 'shop review cannot be overwritten');
-$a = $app->saveProduct($north, 0, "N-$tag", '北仓帆布包', 12000, 10, 'active');
+denied(fn() => $app->submitShopAgreement($north, '另一主体'), 'approved payee cannot be replaced');
+$review = $app->rows("SELECT actor_id,details FROM audit_log WHERE action='shop.reviewed' AND entity_id=? ORDER BY id DESC LIMIT 1", [$northShop])[0];
+same($admin, (int) $review['actor_id'], 'operator recorded on approval');
+$approvalDetails = json_decode($review['details'], true, flags: JSON_THROW_ON_ERROR);
+same('北仓选物商行', $approvalDetails['payee_name'], 'approved payee recorded');
+same(Commerce::AGREEMENT_VERSION, $approvalDetails['agreement_version'], 'approved agreement version recorded');
+denied(fn() => $app->createPlatformShop($finance, "house-$tag@example.test", $pw, '自营旗舰店', '平台商行'),
+    'only operations can create platform shops');
+$house = $app->createPlatformShop($admin, "house-$tag@example.test", $pw, '自营旗舰店', '平台商行');
+same('platform', $app->rows('SELECT kind FROM shops WHERE id=?', [$app->profile($house)['shop_id']])[0]['kind'],
+    'platform shop has distinct operating model');
+$catalogEmail = "north-catalog-$tag@example.test";
+$catalogStaff = $app->addShopMember($north, $catalogEmail, $pw, 'catalog');
+$fulfillmentStaff = $app->addShopMember($north, "north-ship-$tag@example.test", $pw, 'fulfillment');
+$supportStaff = $app->addShopMember($north, "north-cs-$tag@example.test", $pw, 'support');
+$financeStaff = $app->addShopMember($pond, "pond-books-$tag@example.test", $pw, 'finance');
+same($catalogStaff, $app->authenticate($catalogEmail, $pw), 'active staff can sign in');
+denied(fn() => $app->addShopMember($catalogStaff, "escalate-$tag@example.test", $pw, 'finance'), 'staff cannot create accounts');
+denied(fn() => $app->setShopMemberEnabled($pond, $catalogStaff, false), 'cross-shop staff revocation refused');
+denied(fn() => $app->setShopMemberEnabled($north, $north, false), 'owner cannot revoke their own membership');
+$app->setShopMemberEnabled($north, $catalogStaff, false);
+same(null, $app->authenticate($catalogEmail, $pw), 'revoked staff cannot sign in');
+same(false, $app->profile($catalogStaff)['enabled'], 'revoked staff session can be invalidated');
+denied(fn() => $app->saveProduct($catalogStaff, 0, "N-$tag", '库存', 12000, 10, 'active'),
+    'revoked staff has no catalog write access');
+$app->setShopMemberEnabled($north, $catalogStaff, true);
+$a = $app->saveProduct($catalogStaff, 0, "N-$tag", '北仓帆布包', 12000, 10, 'active');
 $b = $app->saveProduct($pond, 0, "P-$tag", '池畔早餐杯', 8000, 10, 'active');
 $hidden = $app->saveProduct($north, 0, "D-$tag", '未公开商品', 100, 4, 'draft');
 same([], $app->catalog("D-$tag"), 'draft catalog isolation');
@@ -93,9 +123,17 @@ denied(fn() => $app->saveProduct($north, $a, "N-$tag", '北仓帆布包', 12000,
 $merchantOrders = $app->rows('SELECT id,shop_id FROM merchant_orders WHERE order_id=? ORDER BY shop_id', [$order]);
 [$northOrder, $pondOrder] = array_map('intval', array_column($merchantOrders, 'id'));
 denied(fn() => $app->fulfill($pond, $northOrder, 'PICK-01'), 'fulfillment ownership');
+denied(fn() => $app->fulfill($catalogStaff, $northOrder, 'PICK-01'), 'catalog staff cannot fulfill');
 $aItem = (int) $app->rows('SELECT id FROM order_items WHERE merchant_order_id=?', [$northOrder])[0]['id'];
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '测试', bin2hex(random_bytes(16))), 'refund requires fulfillment');
-$app->fulfill($north, $northOrder, 'PICK-01');
+$beforeSuspension = $app->quote($buyer, [$a => 1], 'store', '一号自提点');
+denied(fn() => $app->setShopSuspended($finance, $northShop, true, '暂停营业'), 'finance cannot suspend a shop');
+$app->setShopSuspended($admin, $northShop, true, '停业盘点');
+same([], $app->catalog("N-$tag"), 'suspended shop removed from catalog');
+denied(fn() => $app->place($buyer, $beforeSuspension['token']), 'stale quote cannot order from suspended shop');
+denied(fn() => $app->quote($buyer, [$a => 1], 'store', '一号自提点'), 'suspended shop cannot receive a new quote');
+same($order, $app->place($buyer, $quote['token']), 'existing order replay remains available after closing');
+$app->fulfill($fulfillmentStaff, $northOrder, 'PICK-01');
 $app->fulfill($pond, $pondOrder, 'PICK-02');
 denied(fn() => $app->fulfill($north, $northOrder, 'PICK-01'), 'fulfillment cannot duplicate sale entry');
 $refundKey = bin2hex(random_bytes(16));
@@ -104,7 +142,8 @@ same($refund, $app->requestRefund($buyer, $aItem, 1, '申请退款', $refundKey)
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '更换原因', $refundKey), 'refund replay payload cannot change');
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '重复申请', bin2hex(random_bytes(16))), 'pending amount is held');
 denied(fn() => $app->decideRefund($pond, $refund, true), 'refund approval ownership');
-same(10800, $app->decideRefund($north, $refund, true), 'discount-adjusted refund');
+denied(fn() => $app->decideRefund($fulfillmentStaff, $refund, true), 'fulfillment staff cannot approve a refund');
+same(10800, $app->decideRefund($supportStaff, $refund, true), 'discount-adjusted refund after shop suspension');
 same(10800, $app->decideRefund($north, $refund, true), 'refund decision replay');
 $ledger = $app->rows('SELECT gross,commission FROM ledger WHERE merchant_order_id=? ORDER BY id', [$northOrder]);
 same([[10800,1080],[-10800,-1080]], array_map(static fn(array $row): array => array_map('intval', array_values($row)), $ledger),
@@ -115,6 +154,14 @@ $pondBatch = $app->settle($finance, $pondShop);
 same([0, 6480], array_map('intval', array_column($app->rows('SELECT amount FROM settlements WHERE id IN (?,?) ORDER BY id',
     [$northBatch, $pondBatch]), 'amount')), 'finance settlement matches PRD example');
 denied(fn() => $app->settle($finance, $pondShop), 'settlement entries cannot be booked twice');
+same([$northOrder, $northOrder], array_map('intval', array_column($app->merchantLedger($north), 'merchant_order_id')),
+    'shop A statement contains only its shop orders while suspended');
+same([$pondOrder], array_map('intval', array_column($app->merchantLedger($financeStaff), 'merchant_order_id')),
+    'shop B statement contains only its shop orders');
+denied(fn() => $app->merchantLedger($catalogStaff), 'product staff cannot read financial records');
+denied(fn() => $app->settle($financeStaff, $pondShop), 'shop finance cannot book a settlement batch');
+$app->setShopSuspended($admin, $northShop, false, '盘点完成');
+same($a, (int) $app->catalog("N-$tag")[0]['id'], 'resumed shop returns to sales');
 
 $race = $app->saveProduct($north, 0, "R-$tag", '最后一件', 200, 1, 'active');
 $q1 = $app->quote($buyer, [$race => 1], 'store', 'Store A');

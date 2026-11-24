@@ -29,10 +29,11 @@ jobs:
           php-version: '8.3'
           extensions: pdo_mysql
           coverage: none
-      - run: find src public bin views tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: find src public bin views tests database -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: Run MySQL integration checks
         env:
           COMMERCE_DSN: mysql:host=127.0.0.1;port=${{ job.services.mysql.ports[3306] }};dbname=commerce_suite_test;charset=utf8mb4
         run: |
+          php bin/commerce.php migrate
           php bin/commerce.php migrate
           php tests/integration.php

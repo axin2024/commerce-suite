@@ -50,10 +50,11 @@ function redirect(string $page, array $params = []): never
     exit;
 }
 
-function loginAs(int $id): void
+function loginAs(array $user): void
 {
     session_regenerate_id(true);
-    $_SESSION = ['user' => $id, 'csrf' => bin2hex(random_bytes(32))];
+    $_SESSION = ['user' => (int) $user['id'], 'csrf' => bin2hex(random_bytes(32)),
+        'access_version' => $user['access_version'] ?? null];
 }
 
 function e(string|int|null $value): string
@@ -80,7 +81,7 @@ function form(string $action): void
 function badge(string $status): string
 {
     $labels = [
-        'pending' => '待审核', 'active' => '已启用', 'rejected' => '已拒绝',
+        'pending' => '待审核', 'active' => '已启用', 'rejected' => '已拒绝', 'suspended' => '暂停营业',
         'draft' => '草稿', 'archived' => '已归档', 'unpaid' => '待付款',
         'paid' => '已付款', 'ready' => '待履约', 'fulfilled' => '已履约',
         'cancelled' => '已取消', 'approved' => '已审批',
@@ -92,6 +93,13 @@ try {
     $app = new Commerce(database());
     $id = (int) ($_SESSION['user'] ?? 0);
     $user = $id ? $app->profile($id) : null;
+    if (($user['role'] ?? null) === 'merchant'
+        && (!$user['enabled'] || $user['access_version'] !== ($_SESSION['access_version'] ?? null))) {
+        session_regenerate_id(true);
+        $message = $user['enabled'] ? '店铺授权已变更，请重新登录。' : '该店铺账号已停用。';
+        $_SESSION = ['csrf' => bin2hex(random_bytes(32)), 'failure' => $message];
+        redirect('account');
+    }
     $role = $user['role'] ?? 'guest';
     $cart = $_SESSION['cart'] ?? [];
 
@@ -124,13 +132,14 @@ try {
                     if (!$login) {
                         throw new RuleViolation('邮箱或密码有误。');
                     }
-                    loginAs($login);
+                    loginAs($app->profile($login));
                     redirect('home');
                 case 'register':
                     if ($id) {
                         throw new RuleViolation('请退出当前账号后再注册。');
                     }
-                    loginAs($app->register(input('email'), input('password'), input('shop')));
+                    $account = $app->register(input('email'), input('password'), input('shop'));
+                    loginAs($app->profile($account));
                     redirect('home');
                 case 'logout':
                     $_SESSION = [];
@@ -177,7 +186,34 @@ try {
                     }
                     break;
                 case 'review':
-                    $app->reviewShop($id, number('shop'), input('decision') === 'approve');
+                    $decision = input('decision');
+                    if (!in_array($decision, ['approve', 'reject'], true)) {
+                        throw new RuleViolation('店铺审核操作无效。');
+                    }
+                    $app->reviewShop($id, number('shop'), $decision === 'approve');
+                    break;
+                case 'shop_agreement':
+                    $app->submitShopAgreement($id, input('payee'));
+                    break;
+                case 'shop_status':
+                    $decision = input('decision');
+                    if (!in_array($decision, ['suspend', 'resume'], true)) {
+                        throw new RuleViolation('经营状态操作无效。');
+                    }
+                    $app->setShopSuspended($id, number('shop'), $decision === 'suspend', input('reason'));
+                    break;
+                case 'platform_shop':
+                    $app->createPlatformShop($id, input('email'), input('password'), input('shop'), input('payee'));
+                    break;
+                case 'shop_member':
+                    $app->addShopMember($id, input('email'), input('password'), input('position'));
+                    break;
+                case 'shop_member_access':
+                    $enabled = input('enabled');
+                    if (!in_array($enabled, ['0', '1'], true)) {
+                        throw new RuleViolation('账号状态操作无效。');
+                    }
+                    $app->setShopMemberEnabled($id, number('member'), $enabled === '1');
                     break;
                 case 'product':
                     $app->saveProduct($id, number('id', 0), input('sku'), input('name'), cents(),

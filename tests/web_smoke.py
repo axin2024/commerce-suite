@@ -6,6 +6,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from uuid import uuid4
 
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080"
@@ -87,3 +88,40 @@ assert "生成结算批次" in settlement
 shop_id = extract(settlement, "shop")
 finance.submit("/?page=platform", "settle", shop=shop_id)
 print("Web flow passed: login, role isolation, CSRF, checkout, payment, fulfillment, refund, and settlement.")
+
+suffix = uuid4().hex[:8]
+shop_name = f"入驻测试 {suffix}"
+owner_email = f"owner-{suffix}@example.test"
+staff_email = f"staff-{suffix}@example.test"
+password = "CommerceFixture-2026"
+owner = Session()
+owner.submit("/?page=account", "register", email=owner_email, password=password, shop=shop_name)
+assert "确认协议并提交审核" in owner.load("/?page=merchant")
+owner.submit("/?page=merchant", "shop_agreement", payee=shop_name)
+platform = admin.load("/?page=platform")
+match = re.search(rf'page=platform&amp;shop=(\d+)#ledger">{re.escape(shop_name)}</a>', platform)
+assert match, "merchant application missing"
+shop_id = match[1]
+assert "marketplace-1" in platform
+admin.submit("/?page=platform", "review", shop=shop_id, decision="approve")
+assert "新增商品" in owner.load("/?page=merchant")
+
+team = owner.submit("/?page=merchant", "shop_member", email=staff_email, password=password, position="catalog")
+staff_id = extract(team, "member")
+staff = Session()
+staff.submit("/?page=account", "login", email=staff_email, password=password)
+staff_page = staff.load("/?page=merchant")
+assert "商品与库存" in staff_page and "订单履约" not in staff_page and "本店账单" not in staff_page
+dormant_staff = Session()
+dormant_staff.submit("/?page=account", "login", email=staff_email, password=password)
+owner.submit("/?page=merchant", "shop_member_access", member=staff_id, enabled=0)
+assert "该店铺账号已停用" in staff.load("/?page=merchant")
+owner.submit("/?page=merchant", "shop_member_access", member=staff_id, enabled=1)
+assert "店铺授权已变更，请重新登录" in dormant_staff.load("/?page=merchant")
+
+admin.submit("/?page=platform", "shop_status", shop=shop_id, decision="suspend", reason="验收盘点")
+closed = owner.load("/?page=merchant")
+assert "暂停接单" in closed and "本店账单" in closed and "新增商品" in closed
+admin.submit("/?page=platform", "shop_status", shop=shop_id, decision="resume", reason="盘点完成")
+assert "新增商品" in owner.load("/?page=merchant")
+print("Merchant web flow passed: application, approval, staff roles, session revocation, suspension, and reopening.")
