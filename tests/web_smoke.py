@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -44,6 +45,22 @@ class Session:
     def login(self, role):
         self.submit("/?page=account", "login", email=f"{role}@example.test", password="CommerceDemo-2026")
         assert f"{role}@example.test" in self.load("/?page=account"), f"{role} login"
+
+    def upload_bill(self, csv_text, csrf=None):
+        if csrf is None:
+            csrf = extract(self.load("/?page=channel_bills"), "csrf")
+        boundary = f"commerce-fixture-{uuid4().hex}"
+        body = "\r\n".join((
+            f"--{boundary}", 'Content-Disposition: form-data; name="csrf"', "", csrf,
+            f"--{boundary}", 'Content-Disposition: form-data; name="action"', "", "bill_import",
+            f"--{boundary}", 'Content-Disposition: form-data; name="bill"; filename="statement.csv"',
+            "Content-Type: text/csv", "", csv_text, f"--{boundary}--", "",
+        )).encode()
+        request = urllib.request.Request(BASE + "/", data=body, headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        })
+        with self.client.open(request, timeout=8) as response:
+            return urllib.parse.urlsplit(response.url).query, response.read().decode("utf-8")
 
 
 def extract(html, name):
@@ -250,6 +267,41 @@ if REFUND_SECRET:
     assert (row["gross_minor"], row["commission_minor"], row["net_minor"]) == ("7200", "720", "6480")
     print("Return refund web flow passed: review, parcel tracking, inspection, signed receipt, and settlement.")
     print("Settlement web flow passed: monthly preview, finance review, cashier record, role scope, and CSV export.")
+    if SANDBOX_SECRET:
+        statement = "\n".join((
+            "kind,order_id,reference,currency,amount_minor",
+            f"capture,{order_id},{payload['reference']},CNY,18000",
+            f"return_refund,{order_id},{refund_payload['reference']},CNY,10800",
+            f"capture,{order_id},missing-{uuid4().hex},CNY,18000",
+            f"capture,{order_id},invalid-reference,CNY,not-a-number",
+        ))
+        assert finance.load("/channel-bill-sample.csv").startswith("kind,order_id,reference,currency,amount_minor")
+        assert "表单已失效" in finance.upload_bill(statement, csrf="invalid")[1]
+        assert "CSV 表头" in finance.upload_bill("invalid-header")[1]
+        query, queued_bill = finance.upload_bill(statement)
+        assert "待核对 3" in queued_bill and "格式错误 1" in queued_bill
+        assert finance.upload_bill(statement)[0] == query
+        bill = urllib.parse.parse_qs(query)["bill"][0]
+        bill_path = "/?" + query
+        assert_forbidden(north, bill_path)
+        assert_forbidden(payout, "/?page=channel_bills")
+        merchant_query, _ = north.upload_bill(statement)
+        assert_forbidden(pond, "/?" + merchant_query)
+        test_dsn = os.environ.get("COMMERCE_DSN", "")
+        if os.environ.get("APP_DEMO") == "1" and re.search(r"(?:^|[;:])dbname=[^;]+_test(?:;|$)", test_dsn):
+            php = ["php", "-d", "extension=pdo_mysql"] if os.name == "nt" else ["php"]
+            subprocess.run([*php, "bin/commerce.php", "reconcile"], check=True, timeout=15)
+            report = finance.load(bill_path)
+            assert "已匹配 2" in report and "待补回执 1" in report and "格式错误 1" in report
+            sources = re.findall(r'href="(/\?page=platform&amp;[^"]+)">本地回执 #\d+</a>', report)
+            assert len(sources) == 2
+            assert payload["reference"] in finance.load(sources[0].replace("&amp;", "&"))
+            assert refund_payload["reference"] in finance.load(sources[1].replace("&amp;", "&"))
+            merchant_report = north.load("/?" + merchant_query)
+            assert "已核对 3" in merchant_report and "本地回执 #" not in merchant_report
+            replay = finance.submit(bill_path, "bill_retry", bill=bill)
+            assert "重新排队 1 条记录" in replay and "待核对 1" in replay
+            print("Channel bill web flow passed: upload, replay, queue results, receipt links, tenant scope, and retry.")
 print("Web flow passed: login, shared cart, checkout, payment, store pickup, and repeat scan.")
 
 suffix = uuid4().hex[:8]

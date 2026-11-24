@@ -56,8 +56,11 @@ try {
         case 'expire':
             echo 'Expired orders released: ', $app->expireOrders(), "\n";
             break;
+        case 'reconcile':
+            echo 'Channel bill records checked: ', $app->processChannelBills(), "\n";
+            break;
         default:
-            fwrite(STDERR, "Usage: php bin/commerce.php migrate|seed|expire|operator <admin|finance|payout> <email>\n");
+            fwrite(STDERR, "Usage: php bin/commerce.php migrate|seed|expire|reconcile|operator <admin|finance|payout> <email>\n");
             exit(2);
     }
 } catch (Throwable $error) {

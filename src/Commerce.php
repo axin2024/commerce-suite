@@ -10,6 +10,7 @@ require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
 require_once __DIR__ . '/ReturnOperations.php';
 require_once __DIR__ . '/SettlementOperations.php';
+require_once __DIR__ . '/ChannelBillOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -23,6 +24,7 @@ final class Commerce
     use ShippingOperations;
     use ReturnOperations;
     use SettlementOperations;
+    use ChannelBillOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [

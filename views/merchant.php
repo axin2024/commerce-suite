@@ -123,7 +123,9 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 <?php if ($canSupport || $canFulfill) { require __DIR__ . '/return_workbench.php'; } ?>
 <?php if ($canFinance): ?>
 <section class="panel" id="finance">
-    <div class="heading"><h2>本店账单</h2><a href="/?page=settlements">结算单与导出</a></div>
+    <div class="heading"><h2>本店账单</h2>
+        <div class="inline"><a href="/?page=settlements">结算单与导出</a><a href="/?page=channel_bills">上传渠道回执</a></div>
+    </div>
     <?php $entries = $app->merchantLedger((int) $user['id']); ?>
     <?php if (!$entries): ?><p class="muted">暂无结算分录。</p><?php else: ?>
         <div class="table-wrap"><table>

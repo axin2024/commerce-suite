@@ -20,6 +20,7 @@
             <?php elseif ($role === 'admin' || $role === 'finance'): ?>
                 <a href="/?page=platform">平台运营</a>
                 <a href="/?page=settlements">结算中心</a>
+                <?php if ($role === 'finance'): ?><a href="/?page=channel_bills">渠道对账</a><?php endif; ?>
             <?php elseif ($role === 'payout'): ?>
                 <a href="/?page=settlements">打款登记</a>
             <?php endif; ?>

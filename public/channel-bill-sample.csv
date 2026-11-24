@@ -1,0 +1,4 @@
+kind,order_id,reference,currency,amount_minor
+capture,1,demo-capture-001,CNY,18000
+return_refund,1,demo-return-001,CNY,10800
+exception_refund,1,demo-extra-refund-001,CNY,18000

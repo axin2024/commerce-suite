@@ -35,7 +35,7 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
-if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker'], true)) {
+if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
@@ -46,6 +46,8 @@ if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settl
             echo $app->redeemPickup((int) $argv[2], (int) $argv[3], (int) $argv[4], $argv[5]) ? "redeemed\n" : "already-redeemed\n";
         } elseif ($worker === 'settlement-worker') {
             echo 'frozen-' . $app->freezeSettlement((int) $argv[2], (int) $argv[3], $argv[4], 'CNY', $argv[5]) . "\n";
+        } elseif ($worker === 'bill-worker') {
+            echo 'checked-' . $app->processChannelBills() . "\n";
         } elseif ($argv[2] === 'receive') {
             $app->receivePreorder((int) $argv[3], (int) $argv[4], (int) $argv[5]);
             echo "received\n";
@@ -668,6 +670,72 @@ same('refund_required', $receipt($intent($unprocessed), "expires-before-worker-$
     'late receipt before worker recorded for refund');
 same(false, $app->cancel($unprocessed), 'late receipt closed expired order and released its hold');
 same(0, (int) $app->rows('SELECT reserved FROM products WHERE id=?', [$b])[0]['reserved'], 'late receipt releases expired stock once');
+
+$newBillQuote = $app->quote($buyer, [$a => 1], 'store', '', pickupLocations: $northLocations);
+$newBillOrder = $app->place($buyer, $newBillQuote['token']);
+$billHeader = "kind,order_id,reference,currency,amount_minor\r\n";
+$statement = "\xEF\xBB\xBF" . $billHeader . implode("\r\n", [
+    "capture,$resaleOrder,callback-$tag,CNY,200",
+    "capture,$resaleOrder,callback-$tag,CNY,200",
+    "return_refund,$order,\"return-paid-$tag\",CNY,10800",
+    "exception_refund,$expired,refund-$tag,CNY,200",
+    "capture,$resaleOrder,currency-$tag,CNY,200",
+    "capture,$resaleOrder,overpaid-$tag,CNY,200",
+    "capture,$resaleOrder,late-$tag,CNY,200",
+    "capture,$newBillOrder,bill-late-$tag,CNY,{$newBillQuote['total']}",
+    "capture,$resaleOrder,conflict-$tag,CNY,200",
+    "capture,$resaleOrder,conflict-$tag,CNY,201",
+    "capture,$resaleOrder,\"unterminated,CNY,200",
+    "capture,$resaleOrder,=invalid,CNY,200",
+]) . "\r\n";
+denied(fn() => $app->importChannelBill($buyer, $statement), 'buyer cannot submit channel evidence');
+denied(fn() => $app->importChannelBill($supportStaff, $statement), 'shop support cannot submit financial evidence');
+denied(fn() => $app->importChannelBill($finance, "invalid_header\n"), 'file without required columns rejected');
+denied(fn() => $app->importChannelBill($finance, $billHeader . str_repeat("capture,1,x,CNY,100\n", 1001)), 'row count bound enforced');
+denied(fn() => $app->importChannelBill($finance, $billHeader . str_repeat('x', Commerce::CHANNEL_BILL_MAX_BYTES)),
+    'oversized bill rejected before parsing');
+$billId = $app->importChannelBill($finance, $statement);
+same($billId, $app->importChannelBill($finance, $statement), 'identical upload recovers the same task');
+$billRows = static fn(int $actor, int $bill): array => $app->channelBillDetails($actor, $bill)['rows'];
+same(['queued','duplicate','queued','queued','queued','queued','queued','queued','conflict','conflict','invalid','invalid'],
+    array_column($billRows($finance, $billId), 'status'), 'import preserves original row order and reports malformed and repeated records');
+$shopBill = $app->importChannelBill($north, $billHeader . "capture,$unprocessed,expires-before-worker-$tag,CNY,8100\n"
+    . "return_refund,$order,return-paid-$tag,CNY,10800\n");
+denied(fn() => $app->channelBillDetails($pond, $shopBill), 'merchant cannot see another shop task');
+denied(fn() => $app->channelBillDetails($north, $billId), 'merchant cannot read platform statement');
+denied(fn() => $app->retryChannelBill($north, $shopBill), 'only platform finance requeues statement checks');
+$processed = compete('bill-worker', [[], []]);
+same(9, array_sum(array_map(static fn(string $result): int => (int) substr($result, strlen('checked-')), $processed)),
+    'independent workers only process the nine queued records once');
+$financeRows = $billRows($finance, $billId);
+same(['matched','duplicate','matched','matched','mismatch','receipt_exception','mismatch','awaiting_receipt','conflict','conflict','invalid','invalid'],
+    array_column($financeRows, 'status'), 'batch compares three receipt classes and preserves distinct differences');
+same(['amount_or_currency_mismatch', 'payment_receipt_exception', 'order_mismatch'],
+    array_column(array_slice($financeRows, 4, 3), 'result_code'), 'reconciliation labels show the reason for each difference');
+same([$accepted['receipt_id'], $refund, $late['receipt_id']], array_map('intval',
+    [$financeRows[0]['local_id'], $financeRows[2]['local_id'], $financeRows[3]['local_id']]), 'matches point to existing evidence');
+same(['outside_shop', 'matched'], array_column($billRows($finance, $shopBill), 'status'), 'shop origin limits worker matching scope');
+same([['reviewed', null, null], ['reviewed', null, null]], array_map(static fn(array $row): array =>
+    [$row['status'], $row['result_code'], $row['local_id']], $billRows($north, $shopBill)), 'shop view does not reveal platform-only matching evidence');
+same('unpaid', $app->rows('SELECT status FROM orders WHERE id=?', [$newBillOrder])[0]['status'], 'CSV cannot confirm payment');
+same(0, (int) $app->rows('SELECT COUNT(*) AS count FROM payments WHERE order_id=?', [$newBillOrder])[0]['count'],
+    'CSV adds no payment row');
+same('accepted', $receipt($intent($newBillOrder), "bill-late-$tag", $newBillQuote['total'])['status'],
+    'ordinary signed callback confirms the payment later');
+same(1, $app->retryChannelBill($finance, $billId), 'retry queues only records for missing evidence');
+same(0, $app->retryChannelBill($finance, $billId), 'repeat retry leaves already queued evidence alone');
+same(1, $app->processChannelBills(), 'worker processes the single requeued record');
+same('matched', $billRows($finance, $billId)[7]['status'], 'late signed receipt resolves the missing record');
+same(0, $app->processChannelBills(), 'worker replay leaves completed records alone');
+$largeStatement = $billHeader;
+for ($number = 1; $number <= 102; $number++) {
+    $largeStatement .= "capture,$resaleOrder,page-$tag-$number,CNY,200\n";
+}
+$largeBill = $app->importChannelBill($finance, $largeStatement);
+same(100, $app->processChannelBills(), 'worker caps each transaction at 100 records');
+same(['awaiting_receipt' => 100, 'queued' => 2], array_count_values(array_column($billRows($finance, $largeBill), 'status')),
+    'partially processed import has durable progress');
+same(2, $app->processChannelBills(), 'next worker run resumes the remaining rows');
 
 $preRelease = $app->submitSku($north, 0, "PRE-$tag", '未来批次', 700, 0, $home, '预售回归', '', '', true, true);
 $preSku = $app->reviewSku($admin, $preRelease, true);

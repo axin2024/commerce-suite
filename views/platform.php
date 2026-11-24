@@ -6,6 +6,8 @@ $shopFilter = filter_var($_GET['shop'] ?? '', FILTER_VALIDATE_INT, ['options' =>
 $filter = $shopFilter ? ' WHERE l.shop_id=?' : '';
 $arguments = $shopFilter ? [$shopFilter] : [];
 $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.shop_id' . $filter . ' ORDER BY l.id DESC LIMIT 80', $arguments);
+$receiptId = filter_var($_GET['receipt'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 0;
+$returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 0;
 ?>
 <div class="heading"><h1>平台运营</h1></div>
 <div class="tabs">
@@ -83,7 +85,7 @@ $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.sho
         </table></div>
     <?php endif; ?>
 </section>
-<?php if (demoEnabled()): ?>
+<?php if (demoEnabled() || ($role === 'finance' && $receiptId)): ?>
 <section class="panel" id="receipts">
     <h2>沙箱支付回执</h2>
     <?php
@@ -92,7 +94,7 @@ $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.sho
     $receiptReasons = ['unknown_intent' => '找不到支付意图', 'amount_or_currency_mismatch' => '金额或币种差异',
         'duplicate_charge' => '同订单重复实收', 'late_capture' => '订单关闭后实收'];
     $receipts = $app->rows('SELECT id,reference,status,order_id,currency,amount,failure_code,refund_reference,received_at
-        FROM payment_receipts ORDER BY id DESC LIMIT 100');
+        FROM payment_receipts' . ($receiptId ? ' WHERE id=?' : '') . ' ORDER BY id DESC LIMIT 100', $receiptId ? [$receiptId] : []);
     ?>
     <?php if (!$receipts): ?><p class="muted">暂无外部沙箱回执。</p><?php endif; ?>
     <?php foreach ($receipts as $receipt): ?>
@@ -104,7 +106,7 @@ $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.sho
                 <?php if ($receipt['failure_code']): ?><p><?= e($receiptReasons[$receipt['failure_code']]) ?></p><?php endif; ?>
                 <?php if ($receipt['refund_reference']): ?><p>退款回执 <?= e($receipt['refund_reference']) ?></p><?php endif; ?>
             </div>
-            <?php if ($role === 'finance' && $receipt['status'] === 'refund_required'):
+            <?php if ($role === 'finance' && demoEnabled() && $receipt['status'] === 'refund_required'):
                 form('sandbox_refund'); echo field('receipt', $receipt['id']); ?>
                 <label>退款回执号<input name="reference" maxlength="80" required></label>
                 <button class="secondary">登记渠道退款</button></form>
@@ -113,23 +115,24 @@ $ledger = $app->rows('SELECT l.*,s.name FROM ledger l JOIN shops s ON s.id=l.sho
     <?php endforeach; ?>
 </section>
 <?php endif; ?>
-<?php if ($role === 'finance' && sandboxRefundSecret() !== null): ?>
+<?php if ($role === 'finance' && (sandboxRefundSecret() !== null || $returnReceiptId)): ?>
 <section class="panel" id="return-refunds">
     <h2>退货退款回执</h2>
     <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,
         p.reference AS payment_reference,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
         JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN shops s ON s.id=m.shop_id
-        JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')
-        ORDER BY (r.status='refund_pending') DESC,r.id DESC LIMIT 50"); ?>
+        JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')"
+        . ($returnReceiptId ? ' AND r.id=?' : '') . " ORDER BY (r.status='refund_pending') DESC,r.id DESC LIMIT 50",
+        $returnReceiptId ? [$returnReceiptId] : []); ?>
     <?php if (!$returnReceipts): ?><p class="muted">暂无已验收退货。</p><?php endif; ?>
     <?php foreach ($returnReceipts as $returnReceipt): ?>
         <div class="record">
             <div><strong>#<?= e($returnReceipt['id']) ?> · <?= e($returnReceipt['name']) ?> · <?= cash($returnReceipt['amount']) ?></strong>
                 <?= badge($returnReceipt['status']) ?>
                 <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code></p>
-                <?php if ($returnReceipt['status'] === 'refund_pending'): ?>
+                <?php if ($returnReceipt['status'] === 'refund_pending' && sandboxRefundSecret() !== null): ?>
                     <p>沙箱退款意图 <code class="return-token"><?= e($returnReceipt['refund_token']) ?></code></p>
-                <?php else: ?>
+                <?php elseif ($returnReceipt['refund_reference']): ?>
                     <p>退款流水 <?= e($returnReceipt['refund_reference']) ?></p>
                 <?php endif; ?>
             </div>

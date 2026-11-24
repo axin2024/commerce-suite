@@ -36,6 +36,21 @@ function number(string $key, int $min = 1, int $max = PHP_INT_MAX): int
     return $value;
 }
 
+function billUpload(): string
+{
+    $file = $_FILES['bill'] ?? null;
+    if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK
+        || !is_string($file['tmp_name'] ?? null) || $file['size'] > Commerce::CHANNEL_BILL_MAX_BYTES
+        || !is_uploaded_file($file['tmp_name'])) {
+        throw new RuleViolation('请上传 256 KiB 以内的 CSV 账单。');
+    }
+    $csv = file_get_contents($file['tmp_name'], length: Commerce::CHANNEL_BILL_MAX_BYTES + 1);
+    if ($csv === false) {
+        throw new RuleViolation('无法读取上传的账单。');
+    }
+    return $csv;
+}
+
 function cents(string $key = 'price'): int
 {
     if (!preg_match('/^(\d{1,9})(?:\.(\d{1,2}))?$/D', trim(input($key)), $matches)) {
@@ -381,6 +396,18 @@ try {
                 case 'sandbox_refund':
                     $app->recordSandboxRefund($id, number('receipt'), input('reference'));
                     break;
+                case 'bill_import':
+                    $next = 'channel_bills';
+                    $billId = $app->importChannelBill($id, billUpload());
+                    $_SESSION['notice'] = '账单已保存，可按任务编号查看进度。';
+                    redirect($next, ['bill' => $billId]);
+                case 'bill_retry':
+                    $next = 'channel_bills';
+                    $billId = number('bill');
+                    $nextParams = ['bill' => $billId];
+                    $count = $app->retryChannelBill($id, $billId);
+                    $_SESSION['notice'] = '重新排队 ' . $count . ' 条记录。';
+                    redirect($next, $nextParams);
                 default:
                     throw new RuleViolation('未知操作。');
             }
@@ -402,6 +429,7 @@ try {
         'account' => ['guest', 'buyer', 'merchant', 'admin', 'finance', 'payout'],
         'cart' => ['buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
         'settlements' => ['admin', 'finance', 'merchant', 'payout'],
+        'channel_bills' => ['finance', 'merchant'],
     ];
     if ($page === 'settlements' && ($_GET['download'] ?? '') === 'csv') {
         $batch = filter_var($_GET['batch'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
