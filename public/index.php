@@ -86,7 +86,9 @@ function badge(string $status): string
         'paid' => '已付款', 'ready' => '待履约', 'fulfilled' => '已履约', 'partial' => '部分发货',
         'shipped' => '待签收',
         'pickup_pending' => '待备货', 'pickup_prepared' => '待提货',
-        'cancelled' => '已取消', 'approved' => '已审批',
+        'cancelled' => '已取消', 'approved' => '已退款',
+        'return_authorized' => '待寄回', 'return_in_transit' => '待验收',
+        'refund_pending' => '待渠道退款', 'refunded' => '已退款',
     ];
     return '<span class="badge ' . e($status) . '">' . e($labels[$status] ?? $status) . '</span>';
 }
@@ -330,8 +332,17 @@ try {
                 case 'refund':
                     $app->requestRefund($id, number('item'), number('quantity', 1, 99), input('reason'), input('key'));
                     break;
-                case 'decide':
-                    $app->decideRefund($id, number('refund'), input('decision') === 'approve');
+                case 'return_approve':
+                    $app->reviewReturn($id, number('refund'), number('warehouse'), input('address'), input('note'));
+                    break;
+                case 'return_reject':
+                    $app->reviewReturn($id, number('refund'), null, '', input('note'));
+                    break;
+                case 'return_dispatch':
+                    $app->dispatchReturn($id, number('refund'), input('carrier'), input('tracking'));
+                    break;
+                case 'return_inspect':
+                    $app->inspectReturn($id, number('refund'), number('accepted', 0, 99), number('restocked', 0, 99), input('note'));
                     break;
                 case 'settle':
                     $app->settle($id, number('shop'));

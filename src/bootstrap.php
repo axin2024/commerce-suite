@@ -36,6 +36,11 @@ function sandboxShippingSecret(): ?string
     return sandboxSecret('COMMERCE_SANDBOX_SHIPPING_SECRET');
 }
 
+function sandboxRefundSecret(): ?string
+{
+    return sandboxSecret('COMMERCE_SANDBOX_REFUND_SECRET');
+}
+
 function sandboxSecret(string $variable): ?string
 {
     $secret = getenv($variable);

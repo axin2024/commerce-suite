@@ -8,6 +8,7 @@ require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PreorderOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
+require_once __DIR__ . '/ReturnOperations.php';
 
 final class RuleViolation extends RuntimeException {}
 
@@ -19,6 +20,7 @@ final class Commerce
     use PreorderOperations;
     use PromotionOperations;
     use ShippingOperations;
+    use ReturnOperations;
 
     public const AGREEMENT_VERSION = 'marketplace-1';
     public const STAFF_POSITIONS = [
@@ -840,86 +842,6 @@ final class Commerce
         $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
             VALUES (?,?,?,'sale',?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
         $this->audit($actor, 'order.fulfilled', $id);
-    }
-
-    public function requestRefund(int $buyer, int $itemId, int $quantity, string $reason, string $key): int
-    {
-        $this->actor($buyer, 'buyer');
-        $reason = trim($reason);
-        if ($quantity < 1 || $reason === '' || strlen($reason) > 250 || !preg_match('/^[a-f0-9]{32}$/D', $key)) {
-            throw new RuleViolation('请填写有效的售后数量和原因。');
-        }
-        return $this->transaction(function () use ($buyer, $itemId, $quantity, $reason, $key): int {
-            $this->one('SELECT id FROM users WHERE id=? FOR UPDATE', [$buyer]);
-            $existing = $this->one('SELECT id,item_id,quantity,reason FROM refunds WHERE buyer_id=? AND request_key=?',
-                [$buyer, $key]);
-            if ($existing) {
-                if ((int) $existing['item_id'] !== $itemId || (int) $existing['quantity'] !== $quantity
-                    || $existing['reason'] !== $reason) {
-                    throw new RuleViolation('售后申请编号已使用。');
-                }
-                return (int) $existing['id'];
-            }
-            $item = $this->one("SELECT i.* FROM order_items i JOIN merchant_orders m ON m.id=i.merchant_order_id
-                JOIN orders o ON o.id=m.order_id WHERE i.id=? AND o.buyer_id=? AND m.status='fulfilled' FOR UPDATE",
-                [$itemId, $buyer]);
-            if (!$item) {
-                throw new RuleViolation('订单明细不存在或尚未履约。');
-            }
-            $pending = $this->rows("SELECT quantity FROM refunds WHERE item_id=? AND status='pending' FOR UPDATE",
-                [$itemId]);
-            if ($quantity > (int) $item['quantity'] - (int) $item['refunded_quantity'] - array_sum(array_column($pending, 'quantity'))) {
-                throw new RuleViolation('当前可申请的数量不足。');
-            }
-            $id = $this->insert('INSERT INTO refunds (item_id,buyer_id,request_key,quantity,reason) VALUES (?,?,?,?,?)',
-                [$itemId, $buyer, $key, $quantity, $reason]);
-            $this->audit($buyer, 'refund.requested', $id, ['quantity' => $quantity]);
-            return $id;
-        });
-    }
-
-    public function decideRefund(int $merchant, int $id, bool $approve): int
-    {
-        return $this->transaction(function () use ($merchant, $id, $approve): int {
-            $actor = $this->shopActor($merchant, 'support');
-            $this->one('SELECT id FROM shops WHERE id=? FOR UPDATE', [$actor['shop_id']]);
-            $refund = $this->one('SELECT r.*,i.merchant_order_id,i.quantity AS item_quantity,i.unit_price,
-                i.discount,i.commission,i.refunded_quantity
-                FROM refunds r JOIN order_items i ON i.id=r.item_id JOIN merchant_orders m ON m.id=i.merchant_order_id
-                WHERE r.id=? AND m.shop_id=? FOR UPDATE', [$id, $actor['shop_id']]);
-            if (!$refund) {
-                throw new RuleViolation('售后申请不存在。');
-            }
-            $status = $approve ? 'approved' : 'rejected';
-            if ($refund['status'] === $status) {
-                return (int) $refund['amount'];
-            }
-            if ($refund['status'] !== 'pending') {
-                throw new RuleViolation('售后申请已处理。');
-            }
-            $amount = 0;
-            if ($approve) {
-                $qty = (int) $refund['item_quantity'];
-                $before = (int) $refund['refunded_quantity'];
-                $after = $before + (int) $refund['quantity'];
-                if ($after > $qty) {
-                    throw new RuleViolation('退款数量超过购买数量。');
-                }
-                $net = $qty * (int) $refund['unit_price'] - (int) $refund['discount'];
-                $amount = intdiv($net * $after, $qty) - intdiv($net * $before, $qty);
-                $commission = intdiv((int) $refund['commission'] * $after, $qty)
-                    - intdiv((int) $refund['commission'] * $before, $qty);
-                $this->query('UPDATE order_items SET refunded_quantity=? WHERE id=?', [$after, $refund['item_id']]);
-                $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
-                    VALUES (?,?,?,'refund',?,?)", [
-                    $actor['shop_id'], $refund['merchant_order_id'], 'refund-' . $id, -$amount, -$commission,
-                ]);
-            }
-            $this->query('UPDATE refunds SET status=?,amount=?,decided_by=?,decided_at=UTC_TIMESTAMP() WHERE id=?',
-                [$status, $amount, $merchant, $id]);
-            $this->audit($merchant, 'refund.decided', $id, ['status' => $status, 'amount' => $amount]);
-            return $amount;
-        });
     }
 
     public function settle(int $finance, int $shop): int

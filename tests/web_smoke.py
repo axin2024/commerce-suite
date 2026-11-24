@@ -18,6 +18,7 @@ from uuid import uuid4
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080"
 SANDBOX_SECRET = os.environ.get("COMMERCE_SANDBOX_WEBHOOK_SECRET")
 SHIPPING_SECRET = os.environ.get("COMMERCE_SANDBOX_SHIPPING_SECRET")
+REFUND_SECRET = os.environ.get("COMMERCE_SANDBOX_REFUND_SECRET")
 if urllib.parse.urlsplit(BASE).hostname not in ("127.0.0.1", "localhost", "::1"):
     raise SystemExit("Run this check against a local demo instance.")
 
@@ -177,14 +178,43 @@ order = buyer.load("/?page=orders")
 refund = buyer.submit("/?page=orders", "refund", item=extract(order, "item"),
                       key=extract(order, "key"), quantity=1, reason="测试部分退款")
 assert "售后记录" in refund
-refund_id = extract(north.load("/?page=merchant"), "refund")
-assert "已审批" in north.submit("/?page=merchant", "decide", refund=refund_id, decision="approve")
-settlement = finance.load("/?page=platform")
-assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80" in settlement
-assert "生成结算批次" in settlement
-shop_id = extract(settlement, "shop")
-finance.submit("/?page=platform", "settle", shop=shop_id)
-print("Web flow passed: login, shared cart, checkout, signed payment, store pickup, repeat scan, refund, and settlement.")
+review_form, = forms(north.load("/?page=merchant"), "return_approve")
+refund_id = extract(review_form, "refund")
+return_warehouse = re.search(r'<option value="(\d+)">主仓', review_form)[1]
+address = "北仓园区 8 号退货窗口"
+assert "待寄回" in north.submit("/?page=merchant", "return_approve", refund=refund_id, warehouse=return_warehouse,
+                                address=address, note="请标明订单号")
+assert address in buyer.load("/?page=orders")
+assert "待验收" in buyer.submit("/?page=orders", "return_dispatch", refund=refund_id, carrier="demo",
+                               tracking=f"return-{uuid4().hex}")
+assert "待渠道退款" in north.submit("/?page=merchant", "return_inspect", refund=refund_id, accepted=1,
+                                   restocked=1, note="包装完好")
+assert "退款冲正" not in finance.load("/?page=platform")
+if REFUND_SECRET:
+    queue = finance.load("/?page=platform")
+    token = re.search(r'<code class="return-token">([a-f0-9]{32})</code>', queue)[1]
+    payment = re.search(r'<code class="return-payment">([^<]+)</code>', queue)[1]
+    assert token not in admin.load("/?page=platform") and token not in buyer.load("/?page=orders")
+    refund_payload = {"refund_token": token, "reference": f"returned-{uuid4().hex}", "payment_reference": payment,
+                      "amount": 10800, "currency": "CNY"}
+
+    def return_webhook(payload, **kwargs):
+        return webhook(payload, endpoint="refund-webhook.php", secret=REFUND_SECRET, **kwargs)
+
+    assert return_webhook(refund_payload, signature="0" * 64) == (401, {"error": "invalid_signature"})
+    assert return_webhook(refund_payload, timestamp=int(time.time()) - 600) == (401, {"error": "invalid_signature"})
+    assert return_webhook({**refund_payload, "amount": 10801}) == (409, {"error": "refund_conflict"})
+    assert return_webhook({**refund_payload, "currency": "USD"}) == (409, {"error": "refund_conflict"})
+    expected_refund = (200, {"refund_id": int(refund_id), "status": "refunded"})
+    assert return_webhook(refund_payload) == return_webhook(refund_payload) == expected_refund
+    assert refund_payload["reference"] in buyer.load("/?page=orders")
+    settlement = finance.load("/?page=platform")
+    assert "退款冲正" in settlement and "¥64.80" in settlement and "−¥10.80" in settlement
+    assert "生成结算批次" in settlement
+    shop_id = extract(settlement, "shop")
+    finance.submit("/?page=platform", "settle", shop=shop_id)
+    print("Return refund web flow passed: review, parcel tracking, inspection, signed receipt, and settlement.")
+print("Web flow passed: login, shared cart, checkout, payment, store pickup, and repeat scan.")
 
 suffix = uuid4().hex[:8]
 shop_name = f"入驻测试 {suffix}"

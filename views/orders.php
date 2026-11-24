@@ -64,7 +64,7 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                     <?php endif; ?>
                 <?php endif; ?>
                 <?php foreach ($app->rows('SELECT i.*,r.color,r.size,b.code AS preorder_code,b.expected_on,b.received_at,
-                    (SELECT COALESCE(SUM(r.quantity),0) FROM refunds r WHERE r.item_id=i.id AND r.status=\'pending\') AS pending_qty
+                    (SELECT COALESCE(SUM(' . Commerce::OPEN_RETURN_QUANTITY . '),0) FROM refunds r WHERE r.item_id=i.id) AS pending_qty
                     FROM order_items i LEFT JOIN product_releases r ON r.id=i.product_release_id
                     LEFT JOIN order_preorders op ON op.order_item_id=i.id LEFT JOIN preorder_batches b ON b.id=op.batch_id
                     WHERE i.merchant_order_id=? ORDER BY i.id', [$merchantOrder['id']]) as $item):
@@ -78,7 +78,7 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                             <?php endif; ?>
                             <div class="muted">实付 <?= cash($item['quantity'] * $item['unit_price'] - $item['discount']) ?> · 已退 <?= e($item['refunded_quantity']) ?></div></div>
                         <?php if ($merchantOrder['status'] === 'fulfilled' && $remaining > 0): ?>
-                            <details><summary>申请退款</summary>
+                            <details><summary>申请退货退款</summary>
                                 <?php form('refund'); echo field('item', $item['id']), field('key', bin2hex(random_bytes(16))); ?>
                                 <label>数量<input type="number" min="1" max="<?= $remaining ?>" name="quantity" value="1" required></label>
                                 <label>原因<input name="reason" maxlength="80" required></label>
@@ -95,8 +95,28 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
     <section class="panel">
         <h2>售后记录</h2>
         <?php foreach ($refunds as $refund): ?>
-            <div class="record"><span>#<?= e($refund['id']) ?> · <?= e($refund['name']) ?> × <?= e($refund['quantity']) ?></span>
-                <span><?= badge($refund['status']) ?> <?= cash($refund['amount']) ?></span></div>
+            <div class="record">
+                <div>
+                    <strong>#<?= e($refund['id']) ?> · <?= e($refund['name']) ?> × <?= e($refund['quantity']) ?></strong>
+                    <?= badge($refund['status']) ?>
+                    <?php if ($refund['return_address']): ?><p>寄回地址 <?= e($refund['return_address']) ?></p><?php endif; ?>
+                    <?php if ($refund['review_note']): ?><p>审核备注 <?= e($refund['review_note']) ?></p><?php endif; ?>
+                    <?php if ($refund['tracking']): ?>
+                        <p>退货运单 <?= e($refund['carrier']) ?> · <?= e($refund['tracking']) ?></p>
+                    <?php endif; ?>
+                    <?php if ($refund['accepted_quantity'] !== null): ?><p>验收 <?= e($refund['accepted_quantity']) ?> 件</p><?php endif; ?>
+                    <?php if ($refund['inspection_note']): ?><p>验收备注 <?= e($refund['inspection_note']) ?></p><?php endif; ?>
+                    <?php if ($refund['refund_reference']): ?><p>退款流水 <?= e($refund['refund_reference']) ?></p><?php endif; ?>
+                </div>
+                <?php if ($refund['status'] === 'return_authorized'):
+                    form('return_dispatch'); echo field('refund', $refund['id']); ?>
+                    <label>承运商代码<input name="carrier" maxlength="32" pattern="[A-Za-z0-9_\-]+" required></label>
+                    <label>退货运单号<input name="tracking" maxlength="80" pattern="[A-Za-z0-9_\-]+" required></label>
+                    <button>登记寄回</button></form>
+                <?php elseif (in_array($refund['status'], ['approved', 'refund_pending', 'refunded'], true)): ?>
+                    <strong><?= cash($refund['amount']) ?></strong>
+                <?php endif; ?>
+            </div>
         <?php endforeach; ?>
     </section>
 <?php endif; ?>

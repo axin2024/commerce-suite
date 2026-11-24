@@ -249,10 +249,37 @@ $refund = $app->requestRefund($buyer, $aItem, 1, '申请退款', $refundKey);
 same($refund, $app->requestRefund($buyer, $aItem, 1, '申请退款', $refundKey), 'refund replay');
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '更换原因', $refundKey), 'refund replay payload cannot change');
 denied(fn() => $app->requestRefund($buyer, $aItem, 1, '重复申请', bin2hex(random_bytes(16))), 'pending amount is held');
-denied(fn() => $app->decideRefund($pond, $refund, true), 'refund approval ownership');
-denied(fn() => $app->decideRefund($fulfillmentStaff, $refund, true), 'fulfillment staff cannot approve a refund');
-same(10800, $app->decideRefund($supportStaff, $refund, true), 'discount-adjusted refund after shop suspension');
-same(10800, $app->decideRefund($north, $refund, true), 'refund decision replay');
+denied(fn() => $app->reviewReturn($pond, $refund, $foreignWarehouse, '池畔仓', ''), 'refund approval ownership');
+denied(fn() => $app->reviewReturn($fulfillmentStaff, $refund, $main, '北仓园区', ''), 'fulfillment staff cannot approve a return');
+denied(fn() => $app->reviewReturn($supportStaff, $refund, $foreignWarehouse, '池畔仓', ''), 'returns use a warehouse at the selling shop');
+denied(fn() => $app->reviewReturn($supportStaff, $refund, $main, '', ''), 'return destination needs an address');
+$app->reviewReturn($supportStaff, $refund, $main, '北仓园区', '');
+$app->reviewReturn($north, $refund, $main, '北仓园区', '');
+denied(fn() => $app->reviewReturn($north, $refund, $main, '其他地址', ''), 'review replay cannot change the destination');
+denied(fn() => $app->inspectReturn($fulfillmentStaff, $refund, 1, 1, ''), 'inspection requires a dispatched return');
+denied(fn() => $app->dispatchReturn($otherBuyer, $refund, 'demo', "return-$tag"), 'another buyer cannot register the parcel');
+$app->dispatchReturn($buyer, $refund, 'DEMO', "return-$tag");
+$app->dispatchReturn($buyer, $refund, 'demo', "return-$tag");
+denied(fn() => $app->dispatchReturn($buyer, $refund, 'demo', "other-return-$tag"), 'registered tracking cannot change on replay');
+denied(fn() => $app->inspectReturn($supportStaff, $refund, 1, 1, ''), 'support staff cannot receive stock');
+denied(fn() => $app->inspectReturn($fulfillmentStaff, $refund, 1, 2, ''), 'restock cannot exceed accepted quantity');
+$app->inspectReturn($fulfillmentStaff, $refund, 1, 1, '');
+$app->inspectReturn($fulfillmentStaff, $refund, 1, 1, '');
+same(10, (int) $app->rows('SELECT stock FROM products WHERE id=?', [$a])[0]['stock'], 'sellable unit returns to inventory once');
+same(10, (int) $app->rows('SELECT stock FROM warehouse_stock WHERE product_id=? AND warehouse_id=?', [$a, $main])[0]['stock'],
+    'inspection restocks the designated warehouse');
+same([['kind' => 'sale']], $app->rows('SELECT kind FROM ledger WHERE merchant_order_id=?', [$northOrder]),
+    'inspection does not book a refund before channel confirmation');
+$returnDetails = static fn(int $id): array => $app->rows('SELECT * FROM refunds WHERE id=?', [$id])[0];
+$returnToken = $returnDetails($refund)['refund_token'];
+$returnReceipt = static fn(string $reference, int $amount, string $payment = ''): array =>
+    $app->recordReturnReceipt($returnToken, $reference, $payment ?: "pay-$tag", 'CNY', $amount);
+denied(fn() => $returnReceipt("return-paid-$tag", 10801), 'channel cannot exceed the authorized amount');
+denied(fn() => $returnReceipt("return-paid-$tag", 10800, "unrelated-$tag"), 'refund is bound to the original payment');
+same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'accepted return refunds 108');
+same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'signed refund repeat has no side effects');
+denied(fn() => $returnReceipt("changed-ref-$tag", 10800), 'confirmed intent cannot be assigned to another refund receipt');
+same($fulfillmentStaff, (int) $returnDetails($refund)['inspected_by'], 'return history preserves the inspector');
 $ledger = $app->rows('SELECT gross,commission FROM ledger WHERE merchant_order_id=? ORDER BY id', [$northOrder]);
 same([[10800,1080],[-10800,-1080]], array_map(static fn(array $row): array => array_map('intval', array_values($row)), $ledger),
     'gross and commission reversals balance');
@@ -357,7 +384,7 @@ same(true, $app->cancel($cartOrder, $buyer), 'test cart hold released');
 $east = $app->createWarehouse($catalogStaff, "EAST-$tag", '东区仓', '示例东区配送中心');
 denied(fn() => $app->createWarehouse($catalogStaff, 'MAIN', '第二主仓', '示例地址'), 'warehouse code unique inside shop');
 denied(fn() => $app->createWarehouse($supportStaff, 'NO', '售后无权限', '示例地址'), 'warehouse creation requires catalog access');
-$multiRelease = $app->submitSku($north, 0, "WH-$tag", '分仓验收商品', 1200, 1, $bags, '分仓商品', '', '', true, true);
+$multiRelease = $app->submitSku($north, 0, "WH-$tag", '分仓验收商品', 1207, 1, $bags, '分仓商品', '', '', true, true);
 $multiSku = $app->reviewSku($admin, $multiRelease, true);
 denied(fn() => $app->adjustStock($north, $multiSku, 3, 0, $foreignWarehouse), 'cannot adjust stock in another shop’s warehouse');
 $app->adjustStock($catalogStaff, $multiSku, 2, 0, $east);
@@ -429,6 +456,44 @@ same('fulfilled', $deliveryStatus(), 'last parcel completes the merchant order')
 same([['kind' => 'sale', 'gross' => $multiPaidQuote['total']]], $deliveryLedger(), 'one sale ledger entry includes split shipping');
 same([1, 1, 1], array_map('intval', array_column($app->shipments($deliveryOrder), 'units')), 'one shipment row per parcel');
 same([[$main, 0, 0], [$east, 0, 0]], $multiBalance(), 'shipping does not deduct paid stock again');
+
+$deliveryBatch = $app->settle($finance, $northShop);
+$batchSnapshot = static fn(): array => $app->rows('SELECT s.*,l.gross,l.commission FROM settlements s
+    JOIN ledger l ON l.settlement_id=s.id WHERE s.id=? ORDER BY l.id', [$deliveryBatch]);
+$settledBeforeReturn = $batchSnapshot();
+$deliveryItem = (int) $app->rows('SELECT id FROM order_items WHERE merchant_order_id=?', [$deliveryOrder])[0]['id'];
+$openReturn = static fn(int $quantity): int =>
+    $app->requestRefund($buyer, $deliveryItem, $quantity, '退回分仓商品', bin2hex(random_bytes(16)));
+$firstReturn = $openReturn(2);
+denied(fn() => $openReturn(2), 'overlapping applications cannot exceed the purchased units');
+$app->reviewReturn($supportStaff, $firstReturn, $east, '', '');
+same('示例东区配送中心', $returnDetails($firstReturn)['return_address'], 'review snapshots the configured warehouse address');
+$app->dispatchReturn($buyer, $firstReturn, 'demo', "r-one-$tag");
+denied(fn() => $app->inspectReturn($fulfillmentStaff, $firstReturn, 1, 1, ''), 'short shipment requires an inspection note');
+$app->inspectReturn($fulfillmentStaff, $firstReturn, 1, 1, '包裹仅收到一件');
+$refusedReturn = $openReturn(2);
+$app->reviewReturn($supportStaff, $refusedReturn, null, '', '请按实际寄回件数重新申请');
+$secondReturn = $openReturn(2);
+$app->reviewReturn($supportStaff, $secondReturn, $east, '', '');
+denied(fn() => $app->dispatchReturn($buyer, $secondReturn, 'demo', "r-one-$tag"), 'one return parcel cannot be reused');
+$app->dispatchReturn($buyer, $secondReturn, 'demo', "r-two-$tag");
+$app->inspectReturn($fulfillmentStaff, $secondReturn, 2, 0, '两件商品破损，按验收结果退款');
+same([[$main, 0, 0], [$east, 1, 0]], $multiBalance(), 'unsellable accepted units are not returned to available stock');
+$firstPending = $returnDetails($firstReturn);
+$secondPending = $returnDetails($secondReturn);
+same([1207, 120, 2414, 242], [(int) $firstPending['amount'], (int) $firstPending['commission'],
+    (int) $secondPending['amount'], (int) $secondPending['commission']], 'partial receipts reserve rounding tail before confirmation');
+denied(fn() => $openReturn(1), 'both accepted returns remain reserved while waiting for confirmation');
+$app->recordReturnReceipt($secondPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 2414);
+denied(fn() => $app->recordReturnReceipt($firstPending['refund_token'], "r-paid-two-$tag", "multi-$tag", 'CNY', 1207),
+    'a channel reference cannot confirm two intents');
+$app->recordReturnReceipt($firstPending['refund_token'], "r-paid-one-$tag", "multi-$tag", 'CNY', 1207);
+same(3, (int) $app->rows('SELECT refunded_quantity FROM order_items WHERE id=?', [$deliveryItem])[0]['refunded_quantity'],
+    'out-of-order channel confirmations complete the line once');
+same($settledBeforeReturn, $batchSnapshot(), 'late refund leaves the historical batch and its sale unchanged');
+same([-3259, 2], array_map('intval', array_values($app->rows('SELECT SUM(gross-commission),COUNT(*) FROM ledger
+    WHERE merchant_order_id=? AND settlement_id IS NULL', [$deliveryOrder])[0])), 'refund and commission carry forward, excluding freight');
+denied(fn() => $app->settle($finance, $northShop), 'negative net from a settled sale rolls into the next batch');
 
 $eastPickup = $app->savePickupLocation($north, 0, $east, 'EAST', '东区自提门店', '东区 10 号', true);
 $eastStaff = $app->addShopMember($north, "north-east-$tag@example.test", $pw, 'pickup', $eastPickup);
@@ -650,5 +715,6 @@ denied(fn() => $app->place($buyer, $endingQuote['token']), 'batch expiry prevent
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');
 denied(fn() => $receipt($intent($resaleOrder), "disabled-$tag", 200), 'webhook processing requires sandbox opt-in');
+denied(fn() => $returnReceipt("return-paid-$tag", 10800), 'return webhook processing also requires sandbox opt-in');
 
 echo "$checks integration checks passed.\n";

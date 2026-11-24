@@ -19,7 +19,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
     <?php if ($canCatalog): ?><a href="#products">商品库存</a><?php endif; ?>
     <?php if ($canFulfill): ?><a href="#fulfillment">履约</a><?php endif; ?>
     <?php if ($canPickup): ?><a href="#pickup">门店自提</a><?php endif; ?>
-    <?php if ($canSupport): ?><a href="#refunds">售后</a><?php endif; ?>
+    <?php if ($canSupport || $canFulfill): ?><a href="#refunds">售后</a><?php endif; ?>
     <?php if ($canFinance): ?><a href="#finance">本店账单</a><?php endif; ?>
 </div>
 <?php if ($isOwner): ?>
@@ -118,25 +118,7 @@ $pickupLocations = $isOwner && $canOperate ? $app->merchantPickupLocations((int)
 </section>
 <?php endif; ?>
 <?php if ($canPickup) { require __DIR__ . '/pickup_workbench.php'; } ?>
-<?php if ($canSupport):
-    $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.id=r.item_id
-        JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE m.shop_id=? ORDER BY r.id DESC LIMIT 50', [$shop['id']]); ?>
-<section class="panel" id="refunds">
-    <h2>售后审核</h2>
-    <?php if (!$refunds): ?><p class="muted">暂无售后申请。</p><?php endif; ?>
-    <?php foreach ($refunds as $refund): ?>
-        <div class="record">
-            <div>#<?= e($refund['id']) ?> · <?= e($refund['name']) ?> × <?= e($refund['quantity']) ?> <?= badge($refund['status']) ?>
-                <p class="muted"><?= e($refund['reason']) ?></p></div>
-            <?php if ($refund['status'] === 'pending'):
-                form('decide'); echo field('refund', $refund['id']); ?>
-                <div class="inline"><button name="decision" value="approve">批准</button>
-                    <button class="secondary" name="decision" value="reject">拒绝</button></div></form>
-            <?php else: ?><strong><?= cash($refund['amount']) ?></strong><?php endif; ?>
-        </div>
-    <?php endforeach; ?>
-</section>
-<?php endif; ?>
+<?php if ($canSupport || $canFulfill) { require __DIR__ . '/return_workbench.php'; } ?>
 <?php if ($canFinance): ?>
 <section class="panel" id="finance">
     <h2>本店账单</h2>

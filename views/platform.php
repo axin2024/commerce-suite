@@ -13,6 +13,7 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
     <a href="#shops">店铺管理</a><a href="#ledger">结算分录</a><a href="#batches">结算批次</a>
     <?php if ($role === 'admin'): ?><a href="#catalog-review">商品审核</a><a href="#marketing">会员与营销</a><?php endif; ?>
     <?php if (demoEnabled()): ?><a href="#receipts">沙箱支付回执</a><?php endif; ?>
+    <?php if ($role === 'finance' && sandboxRefundSecret() !== null): ?><a href="#return-refunds">退货退款回执</a><?php endif; ?>
     <?php if ($role === 'admin'): ?><a href="#audit">审计记录</a><?php endif; ?>
 </div>
 <section class="panel" id="shops">
@@ -107,6 +108,30 @@ $batches = $app->rows('SELECT l.*,s.name FROM settlements l JOIN shops s ON s.id
                 <label>退款回执号<input name="reference" maxlength="80" required></label>
                 <button class="secondary">登记渠道退款</button></form>
             <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+</section>
+<?php endif; ?>
+<?php if ($role === 'finance' && sandboxRefundSecret() !== null): ?>
+<section class="panel" id="return-refunds">
+    <h2>退货退款回执</h2>
+    <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,
+        p.reference AS payment_reference,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
+        JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN shops s ON s.id=m.shop_id
+        JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')
+        ORDER BY (r.status='refund_pending') DESC,r.id DESC LIMIT 50"); ?>
+    <?php if (!$returnReceipts): ?><p class="muted">暂无已验收退货。</p><?php endif; ?>
+    <?php foreach ($returnReceipts as $returnReceipt): ?>
+        <div class="record">
+            <div><strong>#<?= e($returnReceipt['id']) ?> · <?= e($returnReceipt['name']) ?> · <?= cash($returnReceipt['amount']) ?></strong>
+                <?= badge($returnReceipt['status']) ?>
+                <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code></p>
+                <?php if ($returnReceipt['status'] === 'refund_pending'): ?>
+                    <p>沙箱退款意图 <code class="return-token"><?= e($returnReceipt['refund_token']) ?></code></p>
+                <?php else: ?>
+                    <p>退款流水 <?= e($returnReceipt['refund_reference']) ?></p>
+                <?php endif; ?>
+            </div>
         </div>
     <?php endforeach; ?>
 </section>
