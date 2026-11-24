@@ -189,6 +189,7 @@ try {
                     $next = 'cart';
                     unset($_SESSION['quote']);
                     $coupon = input('coupon') === '' ? null : number('coupon');
+                    $points = input('points') === '' ? 0 : number('points', 0, Commerce::MAX_POINTS_PER_ORDER);
                     $channel = input('channel');
                     $locations = [];
                     if ($channel === 'store') {
@@ -208,7 +209,7 @@ try {
                             $locations[$shop] = $location;
                         }
                     }
-                    $_SESSION['quote'] = $app->quoteCart($id, $channel, input('destination'), $coupon, $locations);
+                    $_SESSION['quote'] = $app->quoteCart($id, $channel, input('destination'), $coupon, $locations, $points);
                     break;
                 case 'place':
                     $next = 'cart';
@@ -299,6 +300,9 @@ try {
                     break;
                 case 'member_level':
                     $app->setMemberLevel($id, input('email'), input('level'));
+                    break;
+                case 'loyalty_publish':
+                    $app->publishLoyalty($id, number('earn', 0, 10), number('redeem', 0, 100), input('return_spent') === '1');
                     break;
                 case 'promotion_publish':
                     $category = input('category') === '' ? null : number('category');

@@ -35,7 +35,7 @@ $showEntries = $role !== 'payout';
         <?php if ($showEntries): ?>
             <p>销售 <?= cash($settlement['sales']) ?> · 退款 <?= cash($settlement['refunds']) ?>
                 · 净佣金 <?= cash($settlement['commission']) ?> · 平台承担运费 <?= cash($settlement['platform_freight']) ?>
-                · <?= e($settlement['entries']) ?> 笔</p>
+                · 平台积分出资 <?= cash($settlement['platform_points']) ?> · <?= e($settlement['entries']) ?> 笔</p>
         <?php endif; ?>
         <?php if ($settlement['paid_at']): ?>
             <p>银行流水 <code><?= e($settlement['transfer_reference']) ?></code> · 登记 <?= e($settlement['paid_at']) ?> UTC</p>
@@ -56,11 +56,12 @@ $showEntries = $role !== 'payout';
             <div class="heading"><h2>冻结分录</h2>
                 <a href="/?page=settlements&amp;batch=<?= e($batchId) ?>&amp;download=csv">下载 CSV</a></div>
             <div class="table-wrap"><table>
-                <thead><tr><th>源事件</th><th>子订单</th><th>货款与运费</th><th>佣金</th><th>平台承担运费</th><th>净额</th><th>入账时间 UTC</th></tr></thead>
+                <thead><tr><th>源事件</th><th>子订单</th><th>现金</th><th>佣金</th><th>平台承担运费</th><th>积分出资</th><th>净额</th><th>入账时间 UTC</th></tr></thead>
                 <tbody><?php foreach ($entries as $entry): ?>
                     <tr><td><?= e($entry['event_key']) ?></td><td>#<?= e($entry['merchant_order_id']) ?></td>
                         <td><?= cash($entry['gross']) ?></td><td><?= cash($entry['commission']) ?></td>
-                        <td><?= cash($entry['platform_freight']) ?></td><td><?= cash($entry['net']) ?></td><td><?= e($entry['created_at']) ?></td></tr>
+                        <td><?= cash($entry['platform_freight']) ?></td><td><?= cash($entry['platform_points']) ?></td>
+                        <td><?= cash($entry['net']) ?></td><td><?= e($entry['created_at']) ?></td></tr>
                 <?php endforeach; ?></tbody>
             </table></div>
             <?php if ($hasMoreEntries): ?>
@@ -108,7 +109,8 @@ if ($hasMoreBatches) {
 <section class="panel">
     <h2>结算预览 · <?= e($preview['shop_name']) ?> · <?= e($preview['month']) ?> · <?= e($preview['currency']) ?></h2>
     <p>销售 <?= cash($preview['sales']) ?> · 退款 <?= cash($preview['refunds']) ?> · 净佣金 <?= cash($preview['commission']) ?>
-        · 平台承担运费 <?= cash($preview['platform_freight']) ?> · 待结净额 <strong><?= cash($preview['net']) ?></strong>
+        · 平台承担运费 <?= cash($preview['platform_freight']) ?> · 平台积分出资 <?= cash($preview['platform_points']) ?>
+        · 待结净额 <strong><?= cash($preview['net']) ?></strong>
         · <?= e($preview['entries']) ?> 笔</p>
     <?php if ($preview['blocked']): ?><p><?= e($preview['blocked']) ?></p>
     <?php else:

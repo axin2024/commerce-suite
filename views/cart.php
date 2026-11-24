@@ -39,6 +39,7 @@
             $revisions = array_column($selected, 'revision', 'product_id');
             $quote = ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
             $coupons = array_filter($app->buyerCoupons((int) $user['id']), static fn(array $coupon): bool => $coupon['status'] === 'available');
+            $loyaltyPolicy = $app->loyaltyPolicy();
             $pickupOptions = [];
             foreach ($app->checkoutPickupLocations((int) $user['id']) as $location) {
                 $pickupOptions[$location['shop_id']][] = $location;
@@ -71,18 +72,26 @@
                     <?php endforeach; ?>
                 </select></label>
             <?php endif; ?>
+            <?php if (!empty($loyaltyPolicy['redeem_percent'])): ?>
+                <?php $available = min(Commerce::MAX_POINTS_PER_ORDER, (int) $app->loyaltyAccount((int) $user['id'])['available']); ?>
+                <label>积分抵扣（1 积分抵 1 分）<input type="number" min="0" max="<?= e($available) ?>" name="points"
+                    value="<?= e(min($available, $savedQuote['loyalty']['spent'] ?? 0)) ?>"></label>
+                <p class="muted">可用 <?= e($available) ?> 积分，最多抵扣商品金额的 <?= e($loyaltyPolicy['redeem_percent']) ?>%。</p>
+            <?php endif; ?>
             <button class="secondary">计算费用</button></form>
             <?php if ($quote): ?>
                 <dl class="totals">
                     <dt>商品标价小计</dt><dd><?= cash($quote['subtotal'] + ($quote['member_savings'] ?? 0)) ?></dd>
                     <?php if ($quote['member_savings'] ?? 0): ?><dt>会员价优惠</dt><dd><?= cash(-$quote['member_savings']) ?></dd><?php endif; ?>
                     <?php if ($quote['discount']): ?><dt><?= e($quote['promotion']['name'] ?? '跨店优惠') ?></dt><dd><?= cash(-$quote['discount']) ?></dd><?php endif; ?>
+                    <?php if (!empty($quote['loyalty']['spent'])): ?><dt>积分抵扣</dt><dd><?= cash(-$quote['loyalty']['spent']) ?></dd><?php endif; ?>
                     <dt>运费</dt><dd><?= cash($quote['shipping']) ?></dd>
                     <?php if (isset($quote['shops']) && $quote['channel'] === 'web'): ?>
                         <dt>发货仓数</dt><dd><?= e(array_sum(array_map(static fn(array $shop): int => count($shop['warehouses'] ?? []), $quote['shops']))) ?></dd>
                     <?php endif; ?>
                     <dt>应付金额</dt><dd><strong><?= cash($quote['total']) ?></strong></dd>
                 </dl>
+                <?php if (!empty($quote['loyalty']['earned'])): ?><p class="muted">支付后预计赠 <?= e($quote['loyalty']['earned']) ?> 积分。</p><?php endif; ?>
                 <?php if ($quote['channel'] === 'store'): ?>
                     <ul class="muted">
                         <?php foreach ($quote['shops'] as $totals): ?>

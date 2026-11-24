@@ -5,6 +5,30 @@
         <?php form('logout'); ?><button class="secondary">退出登录</button></form>
     </section>
     <?php if ($role === 'buyer'): ?>
+        <?php
+        $points = $app->loyaltyAccount((int) $user['id']);
+        $pointsHistory = $app->loyaltyHistory((int) $user['id']);
+        ?>
+        <?php if ($app->loyaltyPolicy() || $pointsHistory): ?>
+            <section class="panel" id="points">
+                <h2>会员积分</h2>
+                <p>可用积分 <strong><?= e($points['available']) ?></strong> · 待付款预占 <?= e($points['held']) ?></p>
+                <?php if ($points['balance'] < 0): ?>
+                    <p>退货扣回后余额 <?= e($points['balance']) ?>，后续获得的积分先抵扣这笔欠额。</p>
+                <?php endif; ?>
+                <?php if ($pointsHistory): ?>
+                    <div class="table-wrap"><table>
+                        <thead><tr><th>来源</th><th>类型</th><th>余额变动</th><th>预占变动</th><th>时间 UTC</th></tr></thead>
+                        <tbody><?php foreach ($pointsHistory as $entry): ?>
+                            <tr><td>订单 #<?= e($entry['order_id']) ?><?= $entry['refund_id'] ? ' · 售后 #' . e($entry['refund_id']) : '' ?></td>
+                                <td><?= e(Commerce::POINT_EVENTS[$entry['kind']]) ?></td>
+                                <td><?= e($entry['balance_delta']) ?></td><td><?= e($entry['held_delta']) ?></td>
+                                <td><?= e($entry['created_at']) ?></td></tr>
+                        <?php endforeach; ?></tbody>
+                    </table></div>
+                <?php endif; ?>
+            </section>
+        <?php endif; ?>
         <section class="panel" id="coupons">
             <h2>会员与优惠券</h2>
             <p>会员等级 · <?= $user['member_level'] === 'plus' ? '优享会员' : '普通会员' ?></p>

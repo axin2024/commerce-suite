@@ -23,6 +23,11 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
         <?php if ($order['coupon_restored_at']): ?>
             <p>优惠券已返还 · <?= e($order['coupon_restored_at']) ?> UTC <a href="/?page=account#coupons">查看优惠券</a></p>
         <?php endif; ?>
+        <?php if ($order['status'] !== 'cancelled' && ($order['points_spent'] || $order['points_earned'])): ?>
+            <p class="muted">抵扣 <?= e($order['points_spent']) ?> 积分
+                · <?= $order['status'] === 'paid' ? '支付获赠' : '支付后预计赠' ?> <?= e($order['points_earned']) ?> 积分
+                · 规则 #<?= e($order['loyalty_revision_id']) ?> <a href="/?page=account#points">查看积分明细</a></p>
+        <?php endif; ?>
         <?php if (sandboxWebhookSecret() !== null): ?>
             <p class="muted">沙箱支付意图 <code><?= e($order['payment_token']) ?></code></p>
         <?php endif; ?>
@@ -114,6 +119,10 @@ $refunds = $app->rows('SELECT r.*,i.name FROM refunds r JOIN order_items i ON i.
                         <p>退运费 <?= cash($refund['freight_amount']) ?> · <?= e(Commerce::FREIGHT_PAYERS[$refund['freight_payer']]) ?></p>
                     <?php endif; ?>
                     <?php if ($refund['refund_reference']): ?><p>退款流水 <?= e($refund['refund_reference']) ?></p><?php endif; ?>
+                    <?php if ($refund['points_restored'] || $refund['points_reversed']): ?>
+                        <p><?= $refund['status'] === 'refund_pending' ? '退款确认后' : '' ?>
+                            返还抵扣 <?= e($refund['points_restored']) ?> 积分 · 扣回赠送 <?= e($refund['points_reversed']) ?> 积分</p>
+                    <?php endif; ?>
                 </div>
                 <?php if ($refund['status'] === 'return_authorized'):
                     form('return_dispatch'); echo field('refund', $refund['id']); ?>

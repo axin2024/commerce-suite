@@ -523,3 +523,61 @@ if REFUND_SECRET:
     account = buyer.load("/?page=account")
     assert "跨店满 200 减 20" in account and ">可用</span>" in account and "跨店券新版验收" not in account
     print("Coupon refund web flow passed: partial refund hold, revised campaign, final receipt, and original coupon restored.")
+
+    assert "无权执行" in finance.submit("/?page=account", "loyalty_publish", earn=2, redeem=20, return_spent=1)
+    published = admin.submit("/?page=platform", "loyalty_publish", earn=2, redeem=20, return_spent=1)
+    assert "每元赠 2 积分" in published and "最高抵扣 20%" in published
+
+    def north_points_quote(points):
+        buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+        return buyer.submit("/?page=cart", "quote", channel="store", points=points,
+                            **pickup_choices(buyer.load("/?page=cart")))
+
+    earn_quote = north_points_quote(0)
+    assert "支付后预计赠 240 积分" in earn_quote
+    earn_order = buyer.submit("/?page=cart", "place", token=extract(earn_quote, "token"))
+    buyer.submit("/?page=orders", "pay", order=extract(earn_order, "order"), amount=12000)
+    assert "可用积分 <strong>240</strong>" in buyer.load("/?page=account")
+    prior_children = {extract(form, "merchant_order") for form in forms(north.load("/?page=merchant"), "pickup_prepare")}
+
+    redeem_quote = north_points_quote(100)
+    assert "积分抵扣</dt><dd>−¥1.00" in redeem_quote and "¥119.00" in redeem_quote
+    redeem_order = buyer.submit("/?page=cart", "place", token=extract(redeem_quote, "token"))
+    redeem_parent = extract(redeem_order, "order")
+    held = buyer.load("/?page=account")
+    assert "可用积分 <strong>140</strong>" in held and "待付款预占 100" in held
+    buyer.submit("/?page=orders", "pay", order=redeem_parent, amount=11900)
+    assert "可用积分 <strong>378</strong>" in buyer.load("/?page=account")
+    ready_pickup, = (form for form in forms(north.load("/?page=merchant"), "pickup_prepare")
+                     if extract(form, "merchant_order") not in prior_children)
+    points_child = extract(ready_pickup, "merchant_order")
+    points_location = extract(ready_pickup, "pickup_location")
+    north.submit("/?page=merchant", "pickup_prepare", merchant_order=points_child, pickup_location=points_location)
+    pass_page = buyer.submit("/?page=orders", "pickup_issue", merchant_order=points_child)
+    pass_code = re.search(r"提货码 <code>([A-F0-9]{16})</code>", pass_page)[1]
+    north.submit("/?page=merchant", "pickup_redeem", merchant_order=points_child, pickup_location=points_location,
+                 code=pass_code)
+    points_article = buyer.load("/?page=orders").split(f"<h2>订单 #{redeem_parent} ", 1)[1].split("</article>", 1)[0]
+    points_claim_form, = forms(points_article, "refund")
+    buyer.submit("/?page=orders", "refund", item=extract(points_claim_form, "item"), key=extract(points_claim_form, "key"),
+                 quantity=1, reason="积分现金混合退款验收")
+    points_approval, = forms(north.load("/?page=merchant"), "return_approve")
+    points_claim = extract(points_approval, "refund")
+    north.submit("/?page=merchant", "return_approve", refund=points_claim, warehouse=return_warehouse, address=address)
+    buyer.submit("/?page=orders", "return_dispatch", refund=points_claim, carrier="demo", tracking=f"points-{suffix}")
+    admin.submit("/?page=platform", "loyalty_publish", earn=0, redeem=0)
+    north.submit("/?page=merchant", "return_inspect", refund=points_claim, accepted=1, restocked=1)
+    point_queue = finance.load(f"/?page=platform&return_receipt={points_claim}")
+    assert "返还抵扣 100 积分 · 扣回赠送 238 积分" in point_queue
+    point_payload = {
+        "refund_token": re.search(r'<code class="return-token">([a-f0-9]{32})</code>', point_queue)[1],
+        "payment_reference": re.search(r'<code class="return-payment">([^<]+)</code>', point_queue)[1],
+        "reference": f"loyalty-refund-{suffix}", "amount": 11900, "currency": "CNY",
+    }
+    assert return_webhook({**point_payload, "amount": 12000}) == (409, {"error": "refund_conflict"})
+    expected_points_refund = (200, {"refund_id": int(points_claim), "status": "refunded"})
+    assert return_webhook(point_payload) == return_webhook(point_payload) == expected_points_refund
+    point_account = buyer.load("/?page=account")
+    assert "可用积分 <strong>240</strong>" in point_account
+    assert "退款返还抵扣" in point_account and "退款扣回赠送" in point_account
+    print("Loyalty web flow passed: published policy, wallet hold, mixed payment, versioned refund, and account history.")

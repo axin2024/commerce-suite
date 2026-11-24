@@ -7,6 +7,7 @@ require_once __DIR__ . '/InventoryOperations.php';
 require_once __DIR__ . '/PickupOperations.php';
 require_once __DIR__ . '/PreorderOperations.php';
 require_once __DIR__ . '/PromotionOperations.php';
+require_once __DIR__ . '/LoyaltyOperations.php';
 require_once __DIR__ . '/ShippingOperations.php';
 require_once __DIR__ . '/ReturnOperations.php';
 require_once __DIR__ . '/SettlementOperations.php';
@@ -21,6 +22,7 @@ final class Commerce
     use PickupOperations;
     use PreorderOperations;
     use PromotionOperations;
+    use LoyaltyOperations;
     use ShippingOperations;
     use ReturnOperations;
     use SettlementOperations;
@@ -335,7 +337,7 @@ final class Commerce
     public function merchantLedger(int $merchant): array
     {
         $actor = $this->shopActor($merchant, 'finance');
-        return $this->rows('SELECT id,merchant_order_id,kind,gross,commission,settlement_id,created_at,platform_freight,'
+        return $this->rows('SELECT id,merchant_order_id,kind,gross,commission,settlement_id,created_at,platform_freight,platform_points,'
             . self::LEDGER_NET . ' AS net
             FROM ledger WHERE shop_id=? ORDER BY id DESC LIMIT 100', [$actor['shop_id']]);
     }
@@ -457,6 +459,7 @@ final class Commerce
 
     private function priceCart(
         int $buyer, array $cart, string $channel, string $destination, ?int $coupon, bool $lock, array $pickupLocations, array $preorders,
+        int $points,
     ): array {
         $pickup = $channel === 'store';
         $destination = $pickup ? '门店自提' : trim($destination);
@@ -534,16 +537,29 @@ final class Commerce
         $offer = $this->pricePromotion($buyer, $items, $coupon, $lock);
         $subtotal = $memberSavings = 0;
         $discount = array_sum($offer['parts']);
+        $goods = [];
         foreach ($items as $id => &$item) {
             $item['unit_price'] = $offer['prices'][$id];
             $item['discount'] = $offer['parts'][$id] ?? 0;
             $subtotal += $item['unit_price'] * $item['quantity'];
             $memberSavings += ($item['list_price'] - $item['unit_price']) * $item['quantity'];
             $net = $item['unit_price'] * $item['quantity'] - $item['discount'];
+            $goods[$id] = $net;
             $item['commission'] = intdiv($net * $item['fee_bps'], 10_000);
             $shops[$item['shop']]['total'] += $net;
         }
         unset($item);
+        $loyalty = $this->loyaltyQuote($buyer, $points, $goods, $lock);
+        if ($loyalty !== null) {
+            foreach ($loyalty['parts'] as $id => $spent) {
+                $earned = intdiv(($goods[$id] - $spent) * $loyalty['rate'], 100);
+                $items[$id]['points_spent'] = $spent;
+                $items[$id]['points_earned'] = $earned;
+                $shops[$items[$id]['shop']]['total'] -= $spent;
+                $loyalty['earned'] += $earned;
+            }
+            unset($loyalty['rate'], $loyalty['parts']);
+        }
         foreach ($shops as &$shop) {
             $shop['shipping'] = $channel === 'web' ? 800 * count($shop['warehouses']) : 0;
             $shop['total'] += $shop['shipping'];
@@ -555,27 +571,32 @@ final class Commerce
             'cart' => $cart, 'channel' => $channel, 'destination' => $destination, 'coupon' => $coupon, 'promotion' => $offer['promotion'],
             'pickup_locations' => $pickupLocations, 'preorders' => $preorders,
             'items' => $items, 'shops' => $shops, 'subtotal' => $subtotal,
-            'member_savings' => $memberSavings, 'discount' => $discount, 'shipping' => $shipping, 'total' => $subtotal - $discount + $shipping,
-        ];
+            'member_savings' => $memberSavings, 'discount' => $discount, 'shipping' => $shipping,
+            'total' => $subtotal - $discount - $points + $shipping,
+        ] + ($loyalty === null ? [] : ['loyalty' => $loyalty]);
     }
 
     public function quote(
         int $buyer, array $cart, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = [], array $preorders = [],
+        int $points = 0,
     ): array {
         $this->actor($buyer, 'buyer');
-        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations, $preorders));
+        return $this->recordQuote($buyer, $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations,
+            $preorders, $points));
     }
 
-    public function quoteCart(int $buyer, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = []): array
+    public function quoteCart(
+        int $buyer, string $channel, string $destination, ?int $coupon = null, array $pickupLocations = [], int $points = 0,
+    ): array
     {
         $this->actor($buyer, 'buyer');
-        return $this->transaction(function () use ($buyer, $channel, $destination, $coupon, $pickupLocations): array {
+        return $this->transaction(function () use ($buyer, $channel, $destination, $coupon, $pickupLocations, $points): array {
             $this->lockCart($buyer);
             [$cart, $revisions, $preorders] = $this->selectedCart($buyer);
             if (!$cart) {
                 throw new RuleViolation('请先勾选要结算的商品。');
             }
-            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations, $preorders);
+            $snapshot = $this->priceCart($buyer, $cart, $channel, $destination, $coupon, false, $pickupLocations, $preorders, $points);
             $snapshot['cart_revisions'] = $revisions;
             return $this->recordQuote($buyer, $snapshot);
         });
@@ -634,15 +655,18 @@ final class Commerce
                 }
             }
             $current = $this->priceCart($buyer, $snapshot['cart'], $snapshot['channel'], $snapshot['destination'],
-                $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations'], $snapshot['preorders']);
+                $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations'], $snapshot['preorders'], $snapshot['loyalty']['spent'] ?? 0);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
-                throw new RuleViolation('商品、价格或分仓结果已变化，请重新报价。');
+                throw new RuleViolation('商品、价格、积分规则或分仓结果已变化，请重新报价。');
             }
+            $loyalty = $current['loyalty'] ?? null;
             $order = $this->insert('INSERT INTO orders (buyer_id,channel,subtotal,discount,shipping,total,destination,payment_token,
-                promotion_revision_id,expires_at) VALUES (?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
+                promotion_revision_id,loyalty_revision_id,points_spent,points_earned,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP() + INTERVAL 15 MINUTE)', [
                 $buyer, $current['channel'], $current['subtotal'], $current['discount'], $current['shipping'],
                 $current['total'], $current['destination'], bin2hex(random_bytes(16)), $current['promotion']['revision_id'] ?? null,
+                $loyalty['revision_id'] ?? null, $loyalty['spent'] ?? 0, $loyalty['earned'] ?? 0,
             ]);
             if ($current['coupon'] !== null) {
                 $this->query('UPDATE coupon_claims SET order_id=? WHERE buyer_id=? AND promotion_id=?',
@@ -660,10 +684,11 @@ final class Commerce
             }
             foreach ($current['items'] as $product => $item) {
                 $line = $this->insert('INSERT INTO order_items
-                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (merchant_order_id,product_id,sku,name,quantity,unit_price,discount,commission,product_release_id,list_price,
+                     points_spent,points_earned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                     [$merchantOrders[$item['shop']], $product, $item['sku'], $item['name'], $item['quantity'],
-                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price']]);
+                        $item['unit_price'], $item['discount'], $item['commission'], $item['release_id'], $item['list_price'],
+                        $item['points_spent'] ?? 0, $item['points_earned'] ?? 0]);
                 if (isset($item['preorder'])) {
                     $this->reservePreorder($line, $item['preorder']['id'], $item['quantity']);
                 } else {
@@ -672,6 +697,9 @@ final class Commerce
             }
             if ($cartRevisions !== null) {
                 $this->query('DELETE FROM cart_lines WHERE buyer_id=? AND selected=1', [$buyer]);
+            }
+            if ($loyalty !== null) {
+                $this->reserveOrderPoints($order, $buyer, $loyalty);
             }
             $this->query('UPDATE quotes SET order_id=? WHERE token=?', [$order, $token]);
             $this->audit($buyer, 'order.placed', $order, ['channel' => $current['channel'], 'total' => $current['total']]);
@@ -726,6 +754,7 @@ final class Commerce
         $this->query("UPDATE orders SET status='paid' WHERE id=?", [$order]);
         $this->query("UPDATE merchant_orders SET status='ready' WHERE order_id=?", [$order]);
         $this->query('UPDATE coupon_claims SET redeemed_at=UTC_TIMESTAMP() WHERE order_id=? AND redeemed_at IS NULL', [$order]);
+        $this->settleOrderPoints($order, true);
         $this->audit($actor, 'payment.recorded', $order, ['payment_id' => $payment, 'amount' => $amount, 'provider' => $provider]);
         return $payment;
     }
@@ -854,6 +883,7 @@ final class Commerce
         $this->query("UPDATE orders SET status='cancelled' WHERE id=?", [$order]);
         $this->query("UPDATE merchant_orders SET status='cancelled' WHERE order_id=?", [$order]);
         $this->query('UPDATE coupon_claims SET order_id=NULL WHERE order_id=? AND redeemed_at IS NULL', [$order]);
+        $this->settleOrderPoints($order, false);
         $this->audit($actor, 'order.cancelled', $order, ['expired' => $expired]);
     }
 
@@ -870,11 +900,12 @@ final class Commerce
     private function completeMerchantOrder(array $order, ?int $actor): void
     {
         $id = (int) $order['id'];
-        $commission = (int) $this->one('SELECT SUM(commission) AS total FROM order_items WHERE merchant_order_id=?',
-            [$id])['total'];
+        $totals = $this->one('SELECT SUM(commission) AS commission,SUM(points_spent) AS points
+            FROM order_items WHERE merchant_order_id=?', [$id]);
         $this->query("UPDATE merchant_orders SET status='fulfilled',fulfilled_at=UTC_TIMESTAMP() WHERE id=?", [$id]);
-        $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission)
-            VALUES (?,?,?,'sale',?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'], $commission]);
+        $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission,platform_points)
+            VALUES (?,?,?,'sale',?,?,?)", [$order['shop_id'], $id, 'sale-' . $id, $order['total'],
+            (int) $totals['commission'], (int) $totals['points']]);
         $this->audit($actor, 'order.fulfilled', $id);
     }
 }

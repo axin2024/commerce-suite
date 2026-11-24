@@ -75,11 +75,12 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
         <?php if ($shopFilter): ?><a href="/?page=platform#ledger">查看全部店铺</a><?php endif; ?></div>
     <?php if (!$ledger): ?><p class="muted">暂无分录。</p><?php else: ?>
         <div class="table-wrap"><table>
-            <thead><tr><th>店铺</th><th>事件</th><th>子订单</th><th>总额</th><th>佣金</th><th>平台承担运费</th><th>应结</th><th>批次</th></tr></thead>
+            <thead><tr><th>店铺</th><th>事件</th><th>子订单</th><th>现金</th><th>佣金</th><th>平台承担运费</th><th>积分出资</th><th>应结</th><th>批次</th></tr></thead>
             <tbody><?php foreach ($ledger as $entry): ?>
                 <tr><td><?= e($entry['name']) ?></td><td><?= $entry['kind'] === 'sale' ? '销售' : '退款冲正' ?></td>
                     <td>#<?= e($entry['merchant_order_id']) ?></td><td><?= cash($entry['gross']) ?></td>
-                    <td><?= cash($entry['commission']) ?></td><td><?= cash($entry['platform_freight']) ?></td><td><?= cash($entry['net']) ?></td>
+                    <td><?= cash($entry['commission']) ?></td><td><?= cash($entry['platform_freight']) ?></td>
+                    <td><?= cash($entry['platform_points']) ?></td><td><?= cash($entry['net']) ?></td>
                     <td><?php if ($entry['settlement_id']): ?>
                         <a href="/?page=settlements&amp;batch=<?= e($entry['settlement_id']) ?>">#<?= e($entry['settlement_id']) ?></a>
                     <?php else: ?>待结算<?php endif; ?></td></tr>
@@ -122,6 +123,7 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
 <section class="panel" id="return-refunds">
     <h2>退货退款回执</h2>
     <?php $returnReceipts = $app->rows("SELECT r.id,r.status,r.amount,r.refund_token,r.refund_reference,r.freight_amount,r.freight_payer,
+        r.points_spent,r.points_restored,r.points_reversed,
         p.reference AS payment_reference,s.name FROM refunds r JOIN order_items i ON i.id=r.item_id
         JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN shops s ON s.id=m.shop_id
         JOIN payments p ON p.order_id=m.order_id WHERE r.status IN ('refund_pending','refunded')"
@@ -135,6 +137,9 @@ $returnReceiptId = filter_var($_GET['return_receipt'] ?? '', FILTER_VALIDATE_INT
                 <?php if ($returnReceipt['freight_amount'] > 0): ?>
                     <p>货款 <?= cash($returnReceipt['amount'] - $returnReceipt['freight_amount']) ?>
                         · 退运费 <?= cash($returnReceipt['freight_amount']) ?> · <?= e(Commerce::FREIGHT_PAYERS[$returnReceipt['freight_payer']]) ?></p>
+                <?php endif; ?>
+                <?php if ($returnReceipt['points_spent'] || $returnReceipt['points_reversed']): ?>
+                    <p>返还抵扣 <?= e($returnReceipt['points_restored']) ?> 积分 · 扣回赠送 <?= e($returnReceipt['points_reversed']) ?> 积分</p>
                 <?php endif; ?>
                 <p>原支付流水 <code class="return-payment"><?= e($returnReceipt['payment_reference']) ?></code></p>
                 <?php if ($returnReceipt['status'] === 'refund_pending' && sandboxRefundSecret() !== null): ?>

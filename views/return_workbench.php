@@ -29,6 +29,9 @@ $returnWarehouses = $canSupport ? $app->rows('SELECT id,name,address FROM wareho
                 <?php endif; ?>
                 <?php if (in_array($refund['status'], ['approved', 'refund_pending', 'refunded'], true)): ?>
                     <p>退款金额 <?= cash($refund['amount']) ?></p>
+                    <?php if ($refund['points_spent'] || $refund['points_reversed']): ?>
+                        <p>返还抵扣 <?= e($refund['points_restored']) ?> 积分 · 扣回赠送 <?= e($refund['points_reversed']) ?> 积分</p>
+                    <?php endif; ?>
                 <?php endif; ?>
                 <?php if ($canSupport && $refund['shipping'] > 0 && $refund['freight_payer'] !== 'platform'
                     && in_array($refund['status'], ['return_authorized', 'return_in_transit'], true)): ?>

@@ -4,6 +4,7 @@ $campaigns = $app->rows('SELECT p.id,p.code,p.enabled,r.id AS revision,r.name,r.
     FROM promotions p JOIN promotion_revisions r ON r.id=p.current_revision_id
     LEFT JOIN product_categories c ON c.id=r.category_id ORDER BY p.id DESC LIMIT 100');
 $categories = $app->categories();
+$loyaltyPolicy = $app->loyaltyPolicy();
 ?>
 <section class="panel" id="marketing">
     <h2>会员与营销</h2>
@@ -14,6 +15,23 @@ $categories = $app->categories();
             <label>等级<select name="level"><option value="standard">普通会员</option><option value="plus">优享会员</option></select></label>
         </div>
         <button class="secondary">保存等级</button></form>
+    </details>
+    <details><summary>发布积分规则</summary>
+        <?php form('loyalty_publish'); ?>
+        <?php if ($loyaltyPolicy): ?>
+            <p>现行版本 #<?= e($loyaltyPolicy['id']) ?> · 每元赠 <?= e($loyaltyPolicy['earn_per_yuan']) ?> 积分
+                · 最高抵扣 <?= e($loyaltyPolicy['redeem_percent']) ?>%
+                · <?= $loyaltyPolicy['return_spent'] ? '退款返还抵扣积分' : '退款保留积分消耗' ?></p>
+        <?php endif; ?>
+        <div class="inputs">
+            <label>每元赠送积分<input name="earn" type="number" min="0" max="10" required
+                value="<?= e($loyaltyPolicy['earn_per_yuan'] ?? 1) ?>"></label>
+            <label>商品金额最高抵扣比例（%）<input name="redeem" type="number" min="0" max="100" required
+                value="<?= e($loyaltyPolicy['redeem_percent'] ?? 20) ?>"></label>
+        </div>
+        <label class="inline"><input name="return_spent" type="checkbox" value="1"<?= ($loyaltyPolicy['return_spent'] ?? true) ? ' checked' : '' ?>>
+            退款时按原购买数量返还抵扣积分</label>
+        <button>发布积分版本</button></form>
     </details>
     <details><summary>发布跨店活动</summary>
         <?php form('promotion_publish'); ?>

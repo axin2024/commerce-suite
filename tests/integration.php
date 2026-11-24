@@ -891,6 +891,7 @@ same(2, count($app->rows("SELECT id FROM ledger WHERE merchant_order_id=? AND ki
     [$deliveryOrder, $nextBatch])), 'next statement freezes both late refunds');
 $nextCsv = iterator_to_array($app->exportSettlement($finance, $nextBatch), false);
 same('platform_freight_minor', $nextCsv[0][12], 'settlement export identifies platform-funded freight');
+same('platform_points_minor', $nextCsv[0][13], 'settlement export preserves existing columns and appends points funding');
 $freightRows = array_column(array_filter($nextCsv, static fn(array $entry): bool =>
     (int) $entry[5] === $deliveryOrder && $entry[6] === 'refund'), null, 4);
 $csvAmounts = static fn(array $entry): array => array_map('intval', [$entry[8], $entry[9], $entry[10], $entry[12]]);
@@ -997,6 +998,113 @@ foreach ($prepareCouponReturns($keepOrder, $otherBuyer) as $couponReceipt) {
 }
 same([], $restorations($keepOrder), 'a version that opts out keeps its redemption after a full refund');
 same('used', $couponState($otherBuyer, $campaign), 'newer campaign may retain redemptions while the original version restores');
+
+$loyalCustomer = $app->register("loyal-$tag@example.test", $pw);
+$loyalRelease = $app->submitSku($north, 0, "LOYAL-$tag", '积分验收商品', 3333, 20, $bags,
+    '积分验收商品', '', '', true, true);
+$loyalSku = $app->reviewSku($admin, $loyalRelease, true);
+$loyalQuote = static fn(int $points = 0, int $units = 3): array =>
+    $app->quote($loyalCustomer, [$loyalSku => $units], 'store', '', pickupLocations: $northLocations, points: $points);
+$accountPoints = static fn(): array => array_map('intval', $app->loyaltyAccount($loyalCustomer));
+denied(fn() => $app->publishLoyalty($finance, 2, 20, true), 'only platform operations can publish an integral points policy');
+denied(fn() => $app->publishLoyalty($admin, 11, 20, true), 'earn rate cannot exceed the published range');
+$app->publishLoyalty($admin, 2, 20, true);
+$earning = $loyalQuote();
+same([9999, 199], [$earning['total'], $earning['loyalty']['earned']], 'earning is rounded by paid item line');
+$earnOrder = $app->place($loyalCustomer, $earning['token']);
+same(['balance' => 0, 'held' => 0, 'available' => 0], $accountPoints(), 'unpaid order awards no usable points');
+$app->demoPay($loyalCustomer, $earnOrder, "loyal-earn-$tag", $earning['total']);
+$app->demoPay($loyalCustomer, $earnOrder, "loyal-earn-$tag", $earning['total']);
+same(['balance' => 199, 'held' => 0, 'available' => 199], $accountPoints(), 'replayed payment awards points once');
+same([], $app->loyaltyHistory($otherBuyer), 'points activity is scoped to the customer');
+$baseMarketQuote = $app->quote($loyalCustomer, [$a => 1, $b => 1], 'web', '跨店积分报价测试');
+$loyalMarketQuote = $app->quote($loyalCustomer, [$a => 1, $b => 1], 'web', '跨店积分报价测试', points: 101);
+same([101, $baseMarketQuote['discount'], $baseMarketQuote['shipping'], $baseMarketQuote['total'] - 101],
+    [array_sum(array_column($loyalMarketQuote['items'], 'points_spent')), $loyalMarketQuote['discount'],
+        $loyalMarketQuote['shipping'], array_sum(array_column($loyalMarketQuote['shops'], 'total'))],
+    'points allocate across shops after promotion without changing the shipping charge');
+denied(fn() => $loyalQuote(200), 'cannot quote more than wallet balance');
+denied(fn() => $loyalQuote(2000), 'cannot quote more than configured merchandise cap');
+denied(fn() => $loyalQuote(-1), 'negative redemption is rejected');
+
+$quoteA = $loyalQuote(150);
+$quoteB = $loyalQuote(150);
+same(['placed', 'unavailable'], compete('race-worker', [[$loyalCustomer, $quoteA['token']], [$loyalCustomer, $quoteB['token']]]),
+    'concurrent checkouts cannot reserve more points than the account owns');
+$holdOrder = (int) $app->rows('SELECT order_id FROM quotes WHERE token IN (?,?) AND order_id IS NOT NULL',
+    [$quoteA['token'], $quoteB['token']])[0]['order_id'];
+same(['balance' => 199, 'held' => 150, 'available' => 49], $accountPoints(), 'spendable balance excludes reservations');
+same(true, $app->cancel($holdOrder, $loyalCustomer), 'cancelling a waiting order releases its points');
+same(false, $app->cancel($holdOrder, $loyalCustomer), 'replayed cancellation is idempotent');
+same(['balance' => 199, 'held' => 0, 'available' => 199], $accountPoints(), 'cancel releases the original hold exactly once');
+$timeoutQuote = $loyalQuote(100);
+$timeoutOrder = $app->place($loyalCustomer, $timeoutQuote['token']);
+$db->prepare('UPDATE orders SET expires_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=?')->execute([$timeoutOrder]);
+$app->expireOrders();
+same('cancelled', $app->rows('SELECT status FROM orders WHERE id=?', [$timeoutOrder])[0]['status'], 'expiry worker closes waiting points order');
+same('refund_required', $receipt($intent($timeoutOrder), "loyal-late-$tag", $timeoutQuote['total'])['status'],
+    'late capture cannot take the released points');
+same(['balance' => 199, 'held' => 0, 'available' => 199], $accountPoints(), 'expiry and late capture preserve the released balance');
+
+$oldPointsQuote = $loyalQuote(101);
+$loyalRule = $app->publishLoyalty($admin, 2, 20, true);
+denied(fn() => $app->place($loyalCustomer, $oldPointsQuote['token']), 'stale rule version requires a fresh quote');
+$combined = $loyalQuote(101);
+same([9898, ['revision_id' => $loyalRule, 'spent' => 101, 'earned' => 197]],
+    [$combined['total'], $combined['loyalty']], 'cash and earn preview reflect the points price');
+$combinedId = $app->place($loyalCustomer, $combined['token']);
+$noReturnRule = $app->publishLoyalty($admin, 0, 100, false);
+$app->demoPay($loyalCustomer, $combinedId, "loyal-mixed-$tag", 9898);
+same(['balance' => 295, 'held' => 0, 'available' => 295], $accountPoints(), 'points are consumed and earned under placed policy');
+$combinedChild = $childOrder($combinedId);
+$app->preparePickup($north, $combinedChild, $northPickup);
+$app->redeemPickup($north, $combinedChild, $northPickup, $app->issuePickupCode($loyalCustomer, $combinedChild));
+$pointItem = (int) $app->rows('SELECT id FROM order_items WHERE merchant_order_id=?', [$combinedChild])[0]['id'];
+$pointsRefunds = [];
+foreach ([1, 2] as $units) {
+    $claim = $app->requestRefund($loyalCustomer, $pointItem, $units, '积分部分退款验收', bin2hex(random_bytes(16)));
+    $app->reviewReturn($north, $claim, $main, '示例退货地址', '');
+    $app->dispatchReturn($loyalCustomer, $claim, 'demo', "loyal-return-$claim");
+    $app->inspectReturn($north, $claim, $units, $units, '');
+    $pointsRefunds[] = $returnDetails($claim);
+}
+$pointsSplit = static fn(array $case): array => array_map('intval', [$case['amount'], $case['commission'],
+    $case['points_restored'], $case['points_reversed']]);
+same([[3299, 333, 33, 65], [6599, 666, 68, 132]], array_map($pointsSplit, $pointsRefunds),
+    'partial requests reserve remaining cash, point restoration, earned-point reversal and commission');
+same(['balance' => 295, 'held' => 0, 'available' => 295], $accountPoints(), 'inspection alone does not post point adjustments');
+foreach (array_reverse($pointsRefunds) as $case) {
+    $app->recordReturnReceipt($case['refund_token'], "loyal-refund-" . $case['id'], "loyal-mixed-$tag", 'CNY', (int) $case['amount']);
+    $app->recordReturnReceipt($case['refund_token'], "loyal-refund-" . $case['id'], "loyal-mixed-$tag", 'CNY', (int) $case['amount']);
+}
+same(['balance' => 199, 'held' => 0, 'available' => 199], $accountPoints(), 'out-of-order receipts restore the original points once');
+$ledgerAmounts = static fn(array $entry): array => array_map('intval', [$entry['gross'], $entry['commission'], $entry['platform_points'], $entry['net']]);
+same([[9898, 999, 101, 9000], [-6599, -666, -68, -6001], [-3299, -333, -33, -2999]],
+    array_map($ledgerAmounts, $app->rows('SELECT gross,commission,platform_points,' . Commerce::LEDGER_NET . ' AS net
+        FROM ledger WHERE merchant_order_id=? ORDER BY id', [$combinedChild])), 'platform funds the points without reducing merchant sale value');
+
+$fullyCovered = $app->submitSku($north, 0, "ZEROPOINT-$tag", '积分全额抵扣', 199, 3, $bags, '积分全额抵扣', '', '', false, true);
+$coveredSku = $app->reviewSku($admin, $fullyCovered, true);
+$coveredQuote = $app->quote($loyalCustomer, [$coveredSku => 1], 'store', '', pickupLocations: $northLocations, points: 199);
+same([0, $noReturnRule], [$coveredQuote['total'], $coveredQuote['loyalty']['revision_id']], 'full points redemption can produce a zero cash payment');
+$coveredOrder = $app->place($loyalCustomer, $coveredQuote['token']);
+same(['balance' => 0, 'held' => 0, 'available' => 0], $accountPoints(), 'auto-paid order consumes reserved points atomically');
+[$zeroPaidReturn] = $prepareCouponReturns($coveredOrder, $loyalCustomer);
+same(0, $zeroPaidReturn[3], 'fully points-funded item has zero cash refund');
+$confirmCouponReturn($zeroPaidReturn);
+same(['balance' => 0, 'held' => 0, 'available' => 0], $accountPoints(), 'policy in use may retain points redemption');
+foreach ($prepareCouponReturns($earnOrder, $loyalCustomer) as $earnReturn) {
+    $confirmCouponReturn($earnReturn);
+}
+same(['balance' => -199, 'held' => 0, 'available' => 0], $accountPoints(), 'already spent award becomes a points deficit on return');
+$app->publishLoyalty($admin, 2, 20, true);
+$recovery = $loyalQuote(units: 1);
+$app->demoPay($loyalCustomer, $app->place($loyalCustomer, $recovery['token']), "loyal-offset-$tag", $recovery['total']);
+same(['balance' => -133, 'held' => 0, 'available' => 0], $accountPoints(), 'future earnings first clear deficit');
+$pointLog = $app->loyaltyHistory($loyalCustomer);
+same(-133, array_sum(array_column($pointLog, 'balance_delta')), 'account balance matches append-only entries');
+same(0, array_sum(array_column($pointLog, 'held_delta')), 'entries also reconcile open holds');
+$app->publishLoyalty($admin, 0, 0, false);
 
 putenv('APP_DEMO=0');
 denied(fn() => $app->demoPay($buyer, $order, "pay-$tag", 18000), 'demo payment requires opt-in');

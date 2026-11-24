@@ -187,7 +187,13 @@ trait ReturnOperations
                 throw new RuleViolation('退款数量超过购买数量。');
             }
             $net = $quantity * (int) $refund['unit_price'] - (int) $refund['discount'];
-            $goods = intdiv($net * $after, $quantity) - intdiv($net * $before, $quantity);
+            $linePoints = (int) $refund['item_points_spent'];
+            $cash = $net - $linePoints;
+            $goods = intdiv($cash * $after, $quantity) - intdiv($cash * $before, $quantity);
+            $points = intdiv($linePoints * $after, $quantity) - intdiv($linePoints * $before, $quantity);
+            $restored = $refund['return_spent_points'] ? $points : 0;
+            $earned = (int) $refund['item_points_earned'];
+            $reversed = intdiv($earned * $after, $quantity) - intdiv($earned * $before, $quantity);
             $freight = $accepted > 0 ? (int) $refund['freight_amount'] : 0;
             $amount = $goods + $freight;
             $fee = (int) $refund['item_commission'];
@@ -198,10 +204,12 @@ trait ReturnOperations
             $status = $accepted > 0 ? 'refund_pending' : 'rejected';
             $token = $accepted > 0 ? bin2hex(random_bytes(16)) : null;
             $this->query('UPDATE refunds SET status=?,accepted_quantity=?,restocked_quantity=?,inspection_note=?,inspected_by=?,
-                inspected_at=UTC_TIMESTAMP(),amount=?,commission=?,refund_token=? WHERE id=?',
-                [$status, $accepted, $restocked, $note, $merchant, $amount, $commission, $token, $id]);
+                inspected_at=UTC_TIMESTAMP(),amount=?,commission=?,refund_token=?,points_spent=?,points_restored=?,points_reversed=?
+                WHERE id=?', [$status, $accepted, $restocked, $note, $merchant, $amount, $commission, $token, $points, $restored,
+                    $reversed, $id]);
             $this->audit($merchant, 'refund.inspected', $id, ['accepted' => $accepted, 'restocked' => $restocked,
-                'status' => $status, 'amount' => $amount, 'goods' => $goods, 'freight' => $freight, 'note' => $note]);
+                'status' => $status, 'amount' => $amount, 'goods' => $goods, 'freight' => $freight,
+                'points_restored' => $restored, 'points_reversed' => $reversed, 'note' => $note]);
         });
     }
 
@@ -237,11 +245,12 @@ trait ReturnOperations
                     $this->query('UPDATE order_items SET refunded_quantity=refunded_quantity+? WHERE id=?',
                         [$refund['accepted_quantity'], $refund['item_id']]);
                     $credit = $refund['freight_payer'] === 'platform' ? (int) $refund['freight_amount'] : 0;
-                    $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission,platform_freight)
-                        VALUES (?,?,?,'refund',?,?,?)", [
+                    $this->query("INSERT INTO ledger (shop_id,merchant_order_id,event_key,kind,gross,commission,platform_freight,platform_points)
+                        VALUES (?,?,?,'refund',?,?,?,?)", [
                         $identity['shop_id'], $refund['merchant_order_id'], 'refund-' . $id, -$amount, -(int) $refund['commission'],
-                        $credit,
+                        $credit, -(int) $refund['points_spent'],
                     ]);
+                    $this->settleRefundPoints($order, $refund);
                     $this->audit(null, 'refund.confirmed', $id, ['reference' => $reference, 'amount' => $amount]);
                     $this->restoreRefundedCoupon($order, $id);
                 }
@@ -264,8 +273,9 @@ trait ReturnOperations
             $this->one('SELECT id FROM orders WHERE id=? FOR UPDATE', [$order]);
         }
         // All quantity reservations and releases serialize on the order line.
-        $item = $this->one('SELECT i.*,m.shipping FROM refunds r JOIN order_items i ON i.id=r.item_id
-            JOIN merchant_orders m ON m.id=i.merchant_order_id WHERE r.id=? AND m.shop_id=? FOR UPDATE OF i', [$id, $shop]);
+        $item = $this->one('SELECT i.*,m.shipping,p.return_spent FROM refunds r JOIN order_items i ON i.id=r.item_id
+            JOIN merchant_orders m ON m.id=i.merchant_order_id JOIN orders o ON o.id=m.order_id
+            LEFT JOIN loyalty_revisions p ON p.id=o.loyalty_revision_id WHERE r.id=? AND m.shop_id=? FOR UPDATE OF i', [$id, $shop]);
         if (!$item) {
             throw new RuleViolation('售后申请不存在。');
         }
@@ -273,6 +283,8 @@ trait ReturnOperations
             'item_quantity' => $item['quantity'], 'product_id' => $item['product_id'], 'refunded_quantity' => $item['refunded_quantity'],
             'merchant_order_id' => $item['merchant_order_id'], 'unit_price' => $item['unit_price'],
             'discount' => $item['discount'], 'item_commission' => $item['commission'], 'shipping' => $item['shipping'],
+            'item_points_spent' => $item['points_spent'], 'item_points_earned' => $item['points_earned'],
+            'return_spent_points' => $item['return_spent'],
         ];
     }
 
