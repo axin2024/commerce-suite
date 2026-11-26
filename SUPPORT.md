@@ -21,7 +21,7 @@
 | 外部商品目录与库存 | [渠道读取接口](docs/channel-catalog.md)提供按店授权的商品和可售库存。合作方可按游标定期拉取 |
 | 渠道订单与账单 | [渠道订单接口](docs/channel-orders.md)可下单、发起平台收银、查单、取消待付订单、查询包裹轨迹并办理退货。财务可上传本地格式的 CSV 对账。外部已收款订单需另行接入 |
 
-备份、恢复和切换版本见[部署与恢复](docs/deployment.md)。提交问题前请删去 Cookie、数据库密码、个人信息与真实业务流水。安全问题请通过私密方式联系仓库所有者。
+备份、恢复和切换版本见[部署与恢复](docs/deployment.md)。提交问题前请删去 Cookie、数据库密码、个人信息与真实业务流水。GitHub 与码云的安全问题统一使用 [GitHub 私密漏洞报告](https://github.com/axin2024/commerce-suite/security/advisories/new)。
 
 ## 许可
 
