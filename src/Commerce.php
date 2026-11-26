@@ -3,6 +3,13 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/CatalogOperations.php';
+require_once __DIR__ . '/ProcurementOperations.php';
+require_once __DIR__ . '/ProcurementPricing.php';
+require_once __DIR__ . '/ProcurementTenders.php';
+require_once __DIR__ . '/ProcurementApprovals.php';
+require_once __DIR__ . '/ProcurementReceiving.php';
+require_once __DIR__ . '/ProcurementBilling.php';
+require_once __DIR__ . '/ProcurementRecovery.php';
 require_once __DIR__ . '/ChannelCatalogOperations.php';
 require_once __DIR__ . '/ChannelOrderOperations.php';
 require_once __DIR__ . '/ChannelReturnOperations.php';
@@ -28,6 +35,13 @@ final class RuleViolation extends RuntimeException {}
 final class Commerce
 {
     use CatalogOperations;
+    use ProcurementOperations;
+    use ProcurementPricing;
+    use ProcurementTenders;
+    use ProcurementApprovals;
+    use ProcurementReceiving;
+    use ProcurementBilling;
+    use ProcurementRecovery;
     use ChannelCatalogOperations;
     use ChannelOrderOperations;
     use ChannelReturnOperations;

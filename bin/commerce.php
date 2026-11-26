@@ -16,6 +16,9 @@ try {
             assertSchemaReady($db);
             echo "Ready.\n";
             break;
+        case 'procurement-preflight':
+            echo json_encode($app->procurementPreflight(),JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR),PHP_EOL;
+            break;
         case 'operator':
             $password = getenv('COMMERCE_OPERATOR_PASSWORD') ?: '';
             $id = $app->provisionOperator($argv[3] ?? '', $password, $argv[2] ?? '');
@@ -63,7 +66,7 @@ try {
             echo 'Channel bill records checked: ', $app->processChannelBills(), "\n";
             break;
         default:
-            fwrite(STDERR, "Usage: php bin/commerce.php migrate|health|seed|expire|reconcile|operator <admin|finance|payout> <email>\n");
+            fwrite(STDERR, "Usage: php bin/commerce.php migrate|health|seed|expire|reconcile|procurement-preflight|operator <admin|finance|payout> <email>\n");
             exit(2);
     }
 } catch (Throwable $error) {

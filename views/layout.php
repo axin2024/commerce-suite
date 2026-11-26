@@ -26,6 +26,7 @@
             <?php elseif ($role === 'payout'): ?>
                 <a href="/?page=settlements">打款登记</a>
             <?php endif; ?>
+            <?php if (in_array($role, ['buyer', 'admin','finance'], true) || ($role === 'merchant' && Commerce::canManage($user, 'catalog'))): ?><a href="/?page=procurement">企业采购</a><?php endif; ?>
             <a href="/?page=account"><?= $user ? '账号' : '登录 / 注册' ?></a>
         </div>
     </nav>

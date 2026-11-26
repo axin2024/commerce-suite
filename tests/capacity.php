@@ -5,8 +5,8 @@ declare(strict_types=1);
 require __DIR__ . '/../src/bootstrap.php';
 
 $mode = $argv[1] ?? '';
-if (!in_array($mode, ['inventory', 'inventory-worker', 'orders'], true)) {
-    fwrite(STDERR, "Usage: php tests/capacity.php inventory|orders\n");
+if (!in_array($mode, ['inventory', 'inventory-worker', 'orders','procurement','procurement-worker'], true)) {
+    fwrite(STDERR, "Usage: php tests/capacity.php inventory|orders|procurement\n");
     exit(2);
 }
 if (!demoEnabled()) {
@@ -49,18 +49,18 @@ if ($mode === 'inventory-worker') {
     exit;
 }
 
-function checkoutTogether(array $jobs): array
+function checkoutTogether(array $jobs,string $workerMode='inventory-worker'): array
 {
     $command = [PHP_BINARY];
     if (PHP_OS_FAMILY === 'Windows') {
         array_push($command, '-n', '-d', 'extension_dir=' . ini_get('extension_dir'), '-d', 'extension=pdo_mysql');
     }
-    array_push($command, __FILE__, 'inventory-worker');
+    array_push($command, __FILE__, $workerMode);
     $workers = [];
     $results = [];
     try {
-        foreach ($jobs as [$buyer, $token]) {
-            $process = proc_open([...$command, (string) $buyer, $token],
+        foreach ($jobs as $job) {
+            $process = proc_open([...$command, ...array_map('strval',$job)],
                 [['pipe', 'r'], ['pipe', 'w'], ['redirect', 1]], $pipes);
             if (!is_resource($process)) {
                 throw new RuntimeException('Could not start a PHP worker.');
@@ -99,6 +99,11 @@ function createCapacityShop(Commerce $app, int $admin, string $name, string $ema
     $shop = (int) $app->profile($owner)['shop_id'];
     $app->reviewShop($admin, $shop, true);
     return [$owner, $shop];
+}
+
+if (in_array($mode,['procurement','procurement-worker'],true)) {
+    require __DIR__ . '/procurement-capacity.php';
+    exit;
 }
 
 $run = 'capacity-' . bin2hex(random_bytes(5));

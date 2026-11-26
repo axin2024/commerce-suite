@@ -35,12 +35,23 @@ if (!demoEnabled() || !str_ends_with((string) $db->query('SELECT DATABASE()')->f
 }
 
 $worker = $argv[1] ?? '';
+if ($worker==='receipt-interrupt-worker') {
+    $app->receiveProcurementLine((int)$argv[2],(int)$argv[3],1,'RESTART-40',40,0);
+    echo "committed\n";
+    fflush(STDOUT);
+    fgets(STDIN);
+    exit;
+}
 if (in_array($worker, ['race-worker', 'pickup-worker', 'preorder-worker', 'settlement-worker', 'bill-worker', 'freight-worker',
-    'refund-worker'], true)) {
+    'refund-worker','procurement-award-worker'], true)) {
     echo "ready\n";
     fgets(STDIN);
     try {
-        if ($worker === 'race-worker') {
+        if ($worker === 'procurement-award-worker') {
+            $result = $app->proposeProcurementAward((int)$argv[2],(int)$argv[3],(int)$argv[4],(int)$argv[5],
+                [['line'=>1,'qty'=>60],['line'=>2,'qty'=>40]],$argv[6]);
+            echo $result['status'] . "\n";
+        } elseif ($worker === 'race-worker') {
             $app->place((int) $argv[2], $argv[3]);
             echo "placed\n";
         } elseif ($worker === 'pickup-worker') {
@@ -109,6 +120,24 @@ $deliveryPeriod = $calendar->modify('-1 month')->format('Y-m');
 $openingPeriod = $calendar->modify('-2 months')->format('Y-m');
 $buyer = $app->register("buyer-$tag@example.test", $pw);
 $otherBuyer = $app->register("buyer2-$tag@example.test", $pw);
+$corpCode = "ACME-$tag";
+$managerEmail = "buyer-$tag@example.test";
+$purchaserEmail = "buyer2-$tag@example.test";
+$company = $app->enrollProcurementCompany($admin, $corpCode, '采购集团', $managerEmail);
+same($company, $app->enrollProcurementCompany($admin, $corpCode, '采购集团', $managerEmail), 'company enrollment replay');
+denied(fn() => $app->enrollProcurementCompany($admin, $corpCode, '其他法人', $managerEmail), 'conflicting billing entity');
+denied(fn() => $app->enrollProcurementCompany($buyer, "OTHER-$tag", '新法人', $managerEmail), 'buyer cannot enroll a company');
+$storeEast = $app->addProcurementStore($buyer, $company, 'E', '东店', '运营一组', '东路1号');
+$storeWest = $app->addProcurementStore($buyer, $company, 'W', '西店', '运营二组', '西路2号');
+same($storeEast, $app->addProcurementStore($buyer, $company, 'E', '东店', '运营一组', '东路1号'), 'store enrollment replay');
+denied(fn() => $app->addProcurementStore($otherBuyer, $company, 'S', '南店', '其他', '南路3号'), 'foreign company rejected');
+$app->changeProcurementMember($buyer, $storeEast, $purchaserEmail, true);
+$app->changeProcurementMember($buyer, $storeEast, $purchaserEmail, true);
+same([$storeEast], array_map('intval', array_column($app->procurementStores($otherBuyer), 'id')), 'purchaser limited to assigned store');
+same([$company,$company], array_map('intval', array_column($app->procurementStores($buyer), 'company_id')), 'two stores share billing entity');
+same([], $app->procurementStores($otherBuyer, $storeWest), 'direct read denied outside grant');
+$app->changeProcurementMember($buyer, $storeEast, $purchaserEmail, false);
+same([], $app->procurementStores($otherBuyer, $storeEast), 'bookmarked store read after revocation');
 $north = $app->register("north-$tag@example.test", $pw, '北仓');
 $pond = $app->register("pond-$tag@example.test", $pw, '池畔');
 $northShop = (int) $app->profile($north)['shop_id'];
@@ -182,9 +211,177 @@ $redRelease = $app->submitSku($catalogStaff, 0, "N-$tag", '北仓帆布包', 120
 same([], $app->catalog("N-$tag"), 'merchant submission requires review before becoming visible');
 denied(fn() => $app->reviewSku($north, $redRelease, true), 'merchant cannot approve its own SKU release');
 $a = $app->reviewSku($admin, $redRelease, true);
+$standard = ['min'=>1, 'max'=>1000, 'priority'=>0, 'price_minor'=>1000];
+$bulk = ['min'=>100, 'max'=>1000, 'priority'=>1, 'price_minor'=>900];
+$tiers = [$standard,$bulk];
+$publish = fn($actor, $rev, $rows) => $app->publishProcurementPricing($actor,$company,$a,$rev,'2027-01-01','2027-12-31',$rows);
+denied(fn() => $publish($north,0,$tiers), 'unsigned supplier cannot publish contract');
+$app->authorizeProcurementSupplier($buyer,$company,$northShop,true);
+denied(fn() => $publish($pond,0,$tiers), 'different supplier cannot publish SKU');
+denied(fn() => $publish($north,0,[$standard,array_merge($bulk,['priority'=>0])]), 'overlapping intervals at same priority');
+$agreement = $publish($north,0,$tiers);
+$quoteAt = fn($actor,$qty,$date) => $app->procurementQuote($actor,$storeEast,$a,$qty,$date);
+same(99000, $quoteAt($buyer,99,'2027-01-01')['total_minor'], 'lower quantity stays at regular price');
+$bulkQuote = $quoteAt($buyer,100,'2027-01-01');
+same([$agreement,900,90000],[(int)$bulkQuote['agreement_id'],(int)$bulkQuote['price_minor'],$bulkQuote['total_minor']], '100 units at 9 yuan each');
+denied(fn() => $quoteAt($otherBuyer,100,'2027-01-01'), 'revoked purchaser cannot read price');
+denied(fn() => $publish($north,0,$tiers), 'stale revision cannot overwrite published rates');
+$v2 = $app->publishProcurementPricing($north,$company,$a,1,'2027-02-01','2027-02-28',[$standard]);
+same($agreement,(int)$quoteAt($buyer,100,'2027-01-31')['agreement_id'], 'future contract leaves current date untouched');
+same($v2,(int)$quoteAt($buyer,100,'2027-02-28')['agreement_id'], 'replacement contract inclusive end date');
+denied(fn() => $quoteAt($buyer,100,'2027-03-01'), 'expired revision does not revive older contract');
+$app->authorizeProcurementSupplier($buyer,$company,$northShop,false);
+denied(fn() => $quoteAt($buyer,100,'2027-01-02'), 'revoked supplier contract cannot be used');
 same($a, $app->reviewSku($admin, $redRelease, true), 'approval replay returns the same SKU');
 $cupRelease = $app->submitSku($pond, 0, "P-$tag", '池畔早餐杯', 8000, 10, $home, '池畔陶瓷', '湖蓝', '300ml', true, true);
 $b = $app->reviewSku($admin, $cupRelease, true);
+$app->authorizeProcurementSupplier($buyer,$company,$northShop,true);
+$app->authorizeProcurementSupplier($buyer,$company,$pondShop,true);
+$app->publishProcurementPricing($pond,$company,$b,0,'2027-01-01','2027-12-31',[$standard]);
+$needs = [['specification'=>'首批供货','quantity'=>60],['specification'=>'次批供货','quantity'=>40]];
+$rfq = $app->openProcurementTender($buyer,$storeEast,'季度采购','2099-12-31 00:00:00',$needs,[$northShop,$pondShop]);
+denied(fn() => $app->openProcurementTender($otherBuyer,$storeEast,'越权','2099-12-31 00:00:00',$needs,[$northShop]), 'revoked purchaser cannot invite');
+same([$rfq],array_map('intval',array_column($app->procurementTenderInbox($north),'id')), 'invited supplier sees own tender');
+same([],$app->procurementTenderInbox($house), 'uninvited supplier has no tender');
+$db->exec('SET timestamp=' . strtotime('2027-01-15 12:00:00 UTC'));
+try {
+    $bidNorth = $app->submitProcurementBid($north,$rfq,0,[1=>$a,2=>$a],0);
+    $bidPond = $app->submitProcurementBid($pond,$rfq,0,[1=>$b,2=>$b],1500);
+    denied(fn() => $app->procurementBidComparison($buyer,$rfq), 'responses sealed before deadline');
+    denied(fn() => $app->submitProcurementBid($pond,$rfq,1,[1=>$a,2=>$a],0), 'supplier cannot quote a competitor SKU');
+    denied(fn() => $app->submitProcurementBid($north,$rfq,0,[1=>$a,2=>$a],0), 'stale supplier revision rejected');
+    $db->prepare('UPDATE procurement_rfqs SET deadline=UTC_TIMESTAMP() WHERE id=?')->execute([$rfq]);
+    $late = $app->submitProcurementBid($north,$rfq,1,[1=>$a,2=>$a],500);
+    $compared = $app->procurementBidComparison($buyer,$rfq);
+    same([$bidNorth,$bidPond,$late],array_map('intval',array_column($compared,'id')), 'two eligible bids ordered by value then late archive');
+    same([90000,101500,90500],array_map('intval',array_column($compared,'total_minor')), 'aggregate same SKU for tier and freeze freight');
+    same([1,1,0],array_map('intval',array_column($compared,'eligible')), 'late revision never replaces on-time bid');
+    denied(fn() => $app->procurementBidComparison($otherBuyer,$rfq), 'cross-store read remains denied after opening');
+    $raceRfq = $app->openProcurementTender($buyer,$storeEast,'补充采购','2099-12-31 00:00:00',$needs,[$northShop]);
+    $raceBid = $app->submitProcurementBid($north,$raceRfq,0,[1=>$a,2=>$a],0);
+} finally {
+    $db->exec('SET timestamp=DEFAULT');
+}
+$db->prepare('UPDATE procurement_rfqs SET deadline=UTC_TIMESTAMP() WHERE id IN (?,?)')->execute([$rfq,$raceRfq]);
+$month = gmdate('Y-m');
+$budget = $app->setProcurementBudget($buyer,$storeEast,$month,100000,100000);
+$remaining = fn() => (int)$app->rows('SELECT limit_minor-used_minor AS balance FROM procurement_budgets WHERE id=?',[$budget])[0]['balance'];
+$selected = [['line'=>1,'qty'=>60],['line'=>2,'qty'=>40]];
+$finalize = fn($key) => $app->proposeProcurementAward($buyer,$rfq,$bidNorth,$storeEast,$selected,$key);
+$app->setProcurementCredit($finance,$company,80000);
+denied(fn() => $finalize('low-credit'),'insufficient credit refuses order');
+same(100000,$remaining(),'credit rejection rolls back new budget hold');
+$app->setProcurementCredit($finance,$company,500000);
+$jobs = [[$buyer,$rfq,$bidNorth,$storeEast,'race-primary'],[$buyer,$raceRfq,$raceBid,$storeEast,'race-secondary']];
+$results = compete('procurement-award-worker',$jobs);
+sort($results);
+same(['ordered','unavailable'],$results,'two 900-yuan concurrent awards fit only one monthly budget');
+same(10000,$remaining(),'monthly budget 1000 minus 900 leaves 100 yuan');
+$won = $app->rows('SELECT * FROM procurement_awards WHERE budget_id=?',[$budget])[0];
+$orderReceipt = $app->proposeProcurementAward($buyer,(int)$won['rfq_id'],(int)$won['bid_id'],$storeEast,$selected,$won['request_key']);
+same(90000,(int)$orderReceipt['credit_reserved_minor'],'same key retrieves original order and shared credit hold');
+same(1,count($app->rows('SELECT order_id FROM procurement_credit_entries WHERE company_id=?',[$company])),'only winner has credit ledger entry');
+denied(fn() => $app->proposeProcurementAward($buyer,(int)$won['rfq_id'],(int)$won['bid_id'],$storeEast,[['line'=>1,'qty'=>1]],$won['request_key']),
+    'conflicting reuse of award key rejected');
+$loser = (int)$won['rfq_id']===$rfq ? $jobs[1] : $jobs[0];
+$app->setProcurementBudget($buyer,$storeEast,$month,200000,500);
+$pending = $app->proposeProcurementAward($buyer,$loser[1],$loser[2],$storeEast,$selected,'manual-review');
+same(['pending',null],[$pending['status'],$pending['order_id']],'above threshold needs headquarters approval');
+denied(fn() => $app->decideProcurementAward($otherBuyer,(int)$pending['award_id'],[],'撤销'),'unassigned buyer cannot reject');
+$app->decideProcurementAward($buyer,(int)$pending['award_id'],[],'调整到货批次');
+same(110000,$remaining(),'rejection releases entire budget hold');
+$revised = $app->proposeProcurementAward($buyer,$loser[1],$loser[2],$storeEast,$selected,'revised-award');
+$partial = $app->decideProcurementAward($buyer,(int)$revised['award_id'],[['line'=>1,'qty'=>60]],'暂缓第二批');
+same(54000,(int)$partial['credit_reserved_minor'],'partial approval freezes approved quantity only');
+same(56000,$remaining(),'partial approval releases rejected quantity only');
+$pOrder = (int)$orderReceipt['order_id'];
+denied(fn() => $app->receiveProcurementLine($otherBuyer,$pOrder,1,'DOCK-1',60,0),'revoked purchaser cannot receive shipment');
+$firstReceipt = $app->receiveProcurementLine($buyer,$pOrder,1,'DOCK-1',60,0);
+same([54000,0],[(int)$firstReceipt['amount_minor'],(int)$firstReceipt['open_qty']],'first 60 units valued at frozen price');
+same($firstReceipt,$app->receiveProcurementLine($buyer,$pOrder,1,'DOCK-1',60,0),'same receipt preserved on replay');
+denied(fn() => $app->receiveProcurementLine($buyer,$pOrder,1,'DOCK-1',59,1),'changed receipt replay rejected');
+denied(fn() => $app->receiveProcurementLine($buyer,$pOrder,2,'DOCK-2',41,0),'over-accepting by one rejected');
+$secondReceipt = $app->receiveProcurementLine($buyer,$pOrder,2,'DOCK-2',36,4);
+same(4,(int)$secondReceipt['open_qty'],'damaged units stay open for replacement');
+$app->receiveProcurementLine($buyer,$pOrder,2,'REPLACEMENT',4,0);
+same(100,array_sum(array_column($app->procurementReceipts($buyer,$pOrder),'accepted_qty')),'both deliveries and replacement reconcile to order');
+$closed = $app->closeProcurementPeriod($finance,$company,$month);
+same($closed,$app->closeProcurementPeriod($finance,$company,$month),'replayed close returns identical statement');
+$billLines = $app->procurementInvoiceLines($finance,$company);
+same(90000,array_sum(array_column($billLines,'amount_minor')),'signed receipts generate 900 yuan receivable');
+$csv = "bank_ref,value_date,amount_minor\nPAY-A,$month-01,60000\nPAY-B,$month-01,30000\n";
+$banks = $app->importProcurementBankCsv($finance,$company,$csv);
+$apply = fn($ref,$i,$amount,$key) => $app->allocateProcurementPayment($finance,$company,$banks[$ref],(int)$billLines[$i]['id'],$amount,$key);
+$allocation = $apply('PAY-A',0,54000,'a1');
+same($allocation,$apply('PAY-A',0,54000,'a1'),'same application yields same allocation');
+$apply('PAY-A',1,6000,'a2');
+denied(fn() => $apply('PAY-A',1,1,'a3'),'payment exhaustion enforced');
+$apply('PAY-B',1,26400,'b1');
+$apply('PAY-B',2,3600,'b2');
+$ledger = fn() => $app->rows('SELECT id,amount_minor FROM procurement_credit_entries WHERE order_id=? ORDER BY id',[$pOrder]);
+same(0,array_sum(array_column($ledger(),'amount_minor')),'600 yuan plus 300 yuan completely restores order credit');
+same([],$app->procurementAging($finance,$company),'fully paid order clears overdue receivables');
+$snapshot = [$ledger(),$app->procurementInvoiceLines($finance,$company),$app->procurementBankBalances($finance,$company)];
+same($banks,$app->importProcurementBankCsv($finance,$company,$csv),'same bank CSV returns original entries');
+same($snapshot,[$ledger(),$app->procurementInvoiceLines($finance,$company),$app->procurementBankBalances($finance,$company)],
+    'bank re-import leaves aging, posted credit and allocations unchanged');
+denied(fn() => $app->importProcurementBankCsv($finance,$company,str_replace('60000','60001',$csv)),'changed bank entry rejected');
+denied(fn() => $app->closeProcurementPeriod($buyer,$company,$month),'only finance closes statements');
+$db->exec('SET timestamp=' . strtotime('2032-05-20 12:00:00 UTC'));
+try {
+    $app->publishProcurementPricing($north,$company,$a,2,'2032-05-01','2032-12-31',$tiers);
+    $app->setProcurementBudget($buyer,$storeEast,'2032-05',100000,100000);
+    $monthlyRfq = $app->openProcurementTender($buyer,$storeEast,'五月物料','2099-12-31 00:00:00',
+        [['specification'=>'门店物料','quantity'=>100]],[$northShop]);
+    $monthlyBid = $app->submitProcurementBid($north,$monthlyRfq,0,[1=>$a],0);
+    $db->prepare('UPDATE procurement_rfqs SET deadline=UTC_TIMESTAMP() WHERE id=?')->execute([$monthlyRfq]);
+    $awardMay = $app->proposeProcurementAward($buyer,$monthlyRfq,$monthlyBid,$storeEast,[['line'=>1,'qty'=>100]],'may-award');
+    $mayReceipt = $app->receiveProcurementLine($buyer,(int)$awardMay['order_id'],1,'MAY-60',60,0);
+    same(40,(int)$mayReceipt['open_qty'],'60 accepted, 40 outstanding on same line');
+    $may = $app->closeProcurementPeriod($finance,$company,'2032-05');
+    $frozen = $app->procurementBillingExport($finance,'statement',$may);
+    same(54000,array_sum(array_column($frozen,'amount_minor')),'May statement frozen at 540 yuan');
+    $credit = $app->returnProcurementReceipt($buyer,(int)$mayReceipt['id'],'MAY-RETURN',10);
+    same($credit,$app->returnProcurementReceipt($buyer,(int)$mayReceipt['id'],'MAY-RETURN',10),'same return yields one credit');
+    denied(fn() => $app->returnProcurementReceipt($buyer,(int)$mayReceipt['id'],'TOO-MANY',51),'return cannot exceed remaining accepted quantity');
+    $creditRows = $app->procurementBillingExport($finance,'credit',$credit);
+    same(['2032-06-01',-9000,(int)$awardMay['award_id'],1],[$creditRows[0]['period'],(int)$creditRows[0]['amount_minor'],
+        (int)$creditRows[0]['award_id'],(int)$creditRows[0]['line_no']],'next open period credit traces same award and purchase line');
+    same($frozen,$app->procurementBillingExport($finance,'statement',$may),'cross-period return preserves frozen statement');
+    denied(fn() => $app->procurementBillingExport($otherBuyer,'credit',$credit),'revoked buyer cannot download return evidence');
+    $db->exec('SET timestamp=' . strtotime('2032-06-20 12:00:00 UTC'));
+    $june = $app->closeProcurementPeriod($finance,$company,'2032-06');
+    same(-9000,array_sum(array_column($app->procurementBillingExport($finance,'statement',$june),'amount_minor')),'June statement contains credit note');
+    $app->changeProcurementMember($buyer,$storeEast,$purchaserEmail,true,'receiver');
+    denied(fn() => $app->openProcurementTender($otherBuyer,$storeEast,'越岗','2099-12-31 00:00:00',$needs,[$northShop]),'receiving role cannot start purchasing');
+    $app->setProcurementIntake($finance,$company,false);
+    denied(fn() => $app->openProcurementTender($buyer,$storeEast,'已退试点','2099-12-31 00:00:00',$needs,[$northShop]),'drain mode stops new tenders');
+    $cmd = [PHP_BINARY];
+    if (PHP_OS_FAMILY==='Windows') {
+        array_push($cmd,'-d','extension=pdo_mysql');
+    }
+    $child = proc_open([...$cmd,__FILE__,'receipt-interrupt-worker',(string)$otherBuyer,(string)$awardMay['order_id']],
+        [['pipe','r'],['pipe','w'],['pipe','w']],$pipes);
+    if (!is_resource($child)) throw new RuntimeException('Could not start interruption rehearsal');
+    try {
+        same("committed\n",fgets($pipes[1]),'receipt transaction committed before response loss');
+    } finally {
+        proc_terminate($child);
+        foreach ($pipes as $pipe) fclose($pipe);
+        proc_close($child);
+    }
+    $reconnected = new Commerce(database());
+    $checkpoint = $reconnected->procurementPreflight();
+    $replayed = $reconnected->receiveProcurementLine($otherBuyer,(int)$awardMay['order_id'],1,'RESTART-40',40,0);
+    same([40,0],[(int)$replayed['accepted_qty'],(int)$replayed['open_qty']],'restart replays persisted second batch');
+    same($checkpoint,$reconnected->procurementPreflight(),'replayed receipt preserves credit sequence and outstanding work');
+    same(100,array_sum(array_column($reconnected->procurementReceipts($otherBuyer,(int)$awardMay['order_id']),'accepted_qty')),'two batches fulfill same purchase line');
+    $app->changeProcurementMember($buyer,$storeEast,$purchaserEmail,false);
+    denied(fn() => $app->procurementBillingExport($otherBuyer,'receipt',(int)$replayed['id']),'saved receipt URL rejected after membership removal');
+    $app->setProcurementIntake($finance,$company,true);
+} finally {
+    $db->exec('SET timestamp=DEFAULT');
+}
 $hiddenRelease = $app->submitSku($north, 0, "D-$tag", '未公开商品', 100, 4, $bags, '待审核', '', '', true, true);
 $hidden = (int) $app->rows('SELECT product_id FROM product_releases WHERE id=?', [$hiddenRelease])[0]['product_id'];
 same([], $app->catalog("D-$tag"), 'draft catalog isolation');

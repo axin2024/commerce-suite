@@ -59,6 +59,24 @@ function cents(string $key = 'price'): int
     return (int) $matches[1] * 100 + (int) str_pad($matches[2] ?? '', 2, '0');
 }
 
+function procurementFormQuantities(): array
+{
+    $quantities = filter_var($_POST['qty'] ?? null,FILTER_VALIDATE_INT,FILTER_REQUIRE_ARRAY);
+    if (!is_array($quantities) || count($quantities)>100) {
+        throw new RuleViolation('请逐行填写数量。');
+    }
+    $items = [];
+    foreach ($quantities as $line=>$qty) {
+        if (!is_int($line) || $line<1 || $qty===false || $qty<0) {
+            throw new RuleViolation('采购行和数量必须为整数。');
+        }
+        if ($qty>0) {
+            $items[] = ['line'=>$line,'qty'=>$qty];
+        }
+    }
+    return $items;
+}
+
 function redirect(string $page, array $params = []): never
 {
     header('Location: /?' . http_build_query(['page' => $page] + $params), true, 303);
@@ -141,6 +159,10 @@ try {
         redirect('account');
     }
     $role = $user['role'] ?? 'guest';
+    if (parse_url($_SERVER['REQUEST_URI'],PHP_URL_PATH)==='/procurement/awards') {
+        require_once __DIR__ . '/../src/procurement-award-http.php';
+        procurementAwardHttp($app,$id,$role);
+    }
     if ($role === 'buyer' && isset($_SESSION['cart'])) {
         $skipped = $app->importSessionCart($id, $_SESSION['cart']);
         unset($_SESSION['cart'], $_SESSION['quote']);
@@ -164,6 +186,121 @@ try {
             }
             $action = input('action');
             switch ($action) {
+                case 'procurement_intake':
+                    $next = 'procurement';
+                    $app->setProcurementIntake($id,number('company'),number('enabled',0,1)===1);
+                    $_SESSION['notice'] = '法人新询价受理状态已保存。';
+                    redirect($next);
+                case 'procurement_close':
+                    $next = 'procurement';
+                    $statement = $app->closeProcurementPeriod($id,number('company'),input('month'));
+                    $_SESSION['notice'] = "法人账单 #$statement 已关账。";
+                    redirect($next);
+                case 'procurement_import':
+                    $next = 'procurement';
+                    $bank = $app->importProcurementBankCsv($id,number('company'),billUpload());
+                    $_SESSION['notice'] = '已核对 ' . count($bank) . ' 笔流水。';
+                    redirect($next);
+                case 'procurement_allocate':
+                    $next = 'procurement';
+                    $allocation = $app->allocateProcurementPayment($id,number('company'),number('bank'),number('line'),number('amount'),input('key'));
+                    $_SESSION['notice'] = "核销回执 #$allocation 已保存。";
+                    redirect($next);
+                case 'procurement_return':
+                    $next = 'procurement';
+                    $nextParams = ['store'=>number('store')];
+                    $line = $app->returnProcurementReceipt($id,number('receipt'),input('reference'),number('quantity'));
+                    $_SESSION['notice'] = "退货贷项 #$line 已入账。";
+                    redirect($next,$nextParams);
+                case 'procurement_receive':
+                    $next = 'procurement';
+                    $nextParams = ['store'=>number('store')];
+                    $receipt = $app->receiveProcurementLine($id,number('order'),number('line'),input('delivery_ref'),
+                        number('accepted',0),number('damaged',0));
+                    $_SESSION['notice'] = '签收回执 #' . $receipt['id'] . '，本行待补 ' . $receipt['open_qty'] . ' 件。';
+                    redirect($next,$nextParams);
+                case 'procurement_limit':
+                    $next = 'procurement';
+                    $app->setProcurementCredit($id,number('company'),number('credit',0));
+                    $_SESSION['notice'] = '法人授信额度已保存。';
+                    redirect($next);
+                case 'procurement_budget':
+                    $next = 'procurement';
+                    $nextParams = ['store'=>number('store')];
+                    $app->setProcurementBudget($id,$nextParams['store'],input('period'),number('limit',0),number('threshold',0));
+                    $_SESSION['notice'] = '月度预算已保存。';
+                    redirect($next,$nextParams);
+                case 'procurement_award':
+                    $next = 'procurement';
+                    $nextParams = ['store'=>number('store')];
+                    $result = $app->proposeProcurementAward($id,number('rfq'),number('bid'),number('ship_to'),procurementFormQuantities(),input('key'));
+                    $_SESSION['notice'] = '授标 #' . $result['award_id'] . ($result['order_id'] ? ' 已生成采购单 #' . $result['order_id'] : ' 已提交总部复核');
+                    redirect($next,['store'=>number('ship_to')]);
+                case 'procurement_decision':
+                    $next = 'procurement';
+                    $nextParams = ['store'=>number('store')];
+                    $result = $app->decideProcurementAward($id,number('award'),procurementFormQuantities(),input('reason'));
+                    $_SESSION['notice'] = $result['order_id'] ? '已生成采购单 #' . $result['order_id'] : '申请已驳回，预算已释放。';
+                    redirect($next,$nextParams);
+                case 'procurement_tender':
+                    $next = 'procurement';
+                    $store = number('store');
+                    $nextParams = ['store'=>$store];
+                    $lines = [];
+                    foreach (preg_split('/\R/', trim(input('lines'))) as $line) {
+                        if (!preg_match('/^(.+),\s*([1-9][0-9]{0,6})\s*$/uD', $line, $m)) {
+                            throw new RuleViolation('请按每行“规格,数量”填写需求。');
+                        }
+                        $lines[] = ['specification'=>trim($m[1]), 'quantity'=>(int)$m[2]];
+                    }
+                    $shops = filter_var($_POST['shops'] ?? null, FILTER_VALIDATE_INT, FILTER_REQUIRE_ARRAY);
+                    $due = str_replace('T',' ',input('deadline'));
+                    $rfq = $app->openProcurementTender($id,$store,input('subject'),strlen($due)===16 ? $due . ':00' : $due,$lines,$shops ?: []);
+                    $_SESSION['notice'] = "询价单 #$rfq 已发送。";
+                    redirect($next,$nextParams);
+                case 'procurement_bid':
+                    $next = 'procurement';
+                    $products = filter_var($_POST['products'] ?? null,FILTER_VALIDATE_INT,FILTER_REQUIRE_ARRAY);
+                    $bid = $app->submitProcurementBid($id,number('rfq'),number('revision',0),$products ?: [],number('freight',0));
+                    $_SESSION['notice'] = "报价 #$bid 已记录。";
+                    redirect($next);
+                case 'procurement_company':
+                    $next = 'procurement';
+                    $app->enrollProcurementCompany($id, input('code'), input('billing_name'), input('email'),input('time_zone','UTC'));
+                    $_SESSION['notice'] = '采购法人已登记。';
+                    redirect($next);
+                case 'procurement_supplier':
+                    $next = 'procurement';
+                    $app->authorizeProcurementSupplier($id, number('company'), number('shop'), number('enabled', 0, 1) === 1);
+                    $_SESSION['notice'] = '签约商家权限已更新。';
+                    redirect($next);
+                case 'procurement_pricing':
+                    $next = 'procurement';
+                    $tiers = [];
+                    foreach (preg_split('/\R/', trim(input('tiers'))) as $line) {
+                        if (!preg_match('/^\s*([0-9]{1,7})\s*,\s*([0-9]{1,7})\s*,\s*([0-9]{1,5})\s*,\s*([0-9]{1,9})\s*$/D', $line, $m)) {
+                            throw new RuleViolation('每行填写起订量、上限、优先级和整数分单价，用英文逗号分隔。');
+                        }
+                        $tiers[] = ['min' => (int) $m[1], 'max' => (int) $m[2], 'priority' => (int) $m[3], 'price_minor' => (int) $m[4]];
+                        if (count($tiers) > 64) {
+                            throw new RuleViolation('最多填写 64 行阶梯。');
+                        }
+                    }
+                    $app->publishProcurementPricing($id, number('company'), number('product'), number('revision', 0),
+                        input('from'), input('until'), $tiers);
+                    $_SESSION['notice'] = '企业协议价已发布。';
+                    redirect($next);
+                case 'procurement_store':
+                    $next = 'procurement';
+                    $app->addProcurementStore($id, number('company'), input('code'), input('name'), input('center'), input('address'));
+                    $_SESSION['notice'] = '采购门店已登记。';
+                    redirect($next);
+                case 'procurement_grant':
+                case 'procurement_revoke':
+                    $next = 'procurement';
+                    $app->changeProcurementMember($id, number('store'), input('email'), $action === 'procurement_grant',input('duty','purchaser'));
+                    $_SESSION['notice'] = '门店授权已更新。';
+                    redirect($next);
                 case 'login':
                     if ($id) {
                         throw new RuleViolation('当前已有登录账号。');
@@ -565,7 +702,34 @@ try {
         'settlements' => ['admin', 'finance', 'merchant', 'payout'],
         'channel_bills' => ['finance', 'merchant'],
         'merchant_orders' => ['merchant'], 'sales_channels' => ['merchant'],
+        'procurement' => ['admin', 'buyer', 'merchant', 'finance'],
     ];
+    if ($page==='procurement' && isset($_GET['download'])) {
+        $kind = $_GET['download'];
+        $document = filter_var($_GET['document'] ?? null,FILTER_VALIDATE_INT);
+        if (!is_string($kind) || !$document || $document<1) {
+            http_response_code(400);
+            exit('下载参数无效。');
+        }
+        try {
+            $rows = $app->procurementBillingExport($id,$kind,$document);
+        } catch (RuleViolation $error) {
+            http_response_code($error->getCode() ?: 403);
+            exit(e($error->getMessage()));
+        }
+        session_write_close();
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $kind . '-' . $document . '.csv"');
+        if ($_SERVER['REQUEST_METHOD']==='GET') {
+            $out = fopen('php://output','wb');
+            fputcsv($out,$rows ? array_keys($rows[0]) : ['statement_id','billing_line_id','period','kind','receipt_id','order_id','line_no','award_id','ship_to','quantity','amount_minor','posted_at'],',','"','');
+            foreach ($rows as $row) {
+                fputcsv($out,$row,',','"','');
+            }
+            fclose($out);
+        }
+        exit;
+    }
     if ($page === 'settlements' && ($_GET['download'] ?? '') === 'csv') {
         $batch = filter_var($_GET['batch'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         if (!$batch) {
@@ -596,9 +760,29 @@ try {
         $page = 'home';
     } elseif (!in_array($role, $scope[$page], true)
         || ($page === 'merchant_orders' && !Commerce::canManage($user, 'fulfillment'))
+        || ($page === 'procurement' && $role === 'merchant' && !Commerce::canManage($user, 'catalog'))
         || ($page === 'sales_channels' && !Commerce::canManage($user, 'owner'))) {
         http_response_code(403);
         $page = 'account';
+    }
+    $procurementStores = [];
+    if ($page === 'procurement' && $role === 'buyer') {
+        $storeFilter = isset($_GET['store']) ? filter_var($_GET['store'], FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1]]) : null;
+        if ($storeFilter === false) {
+            http_response_code(400);
+            exit('无效的门店编号。');
+        }
+        $procurementStores = $app->procurementStores($id, $storeFilter);
+        if ($storeFilter !== null && !$procurementStores) {
+            http_response_code(404);
+            exit('未找到该采购门店。');
+        }
+        $orderFilter = filter_var($_GET['order'] ?? null,FILTER_VALIDATE_INT);
+        if (isset($_GET['order']) && (!$orderFilter || !$storeFilter || !$app->procurementStoreAwards($id,$storeFilter,$orderFilter))) {
+            http_response_code(404);
+            exit('未找到该门店的采购单。');
+        }
     }
     $cartLines = $role === 'buyer' ? $app->cartLines($id) : [];
     $cart = $role === 'guest' ? ($_SESSION['cart'] ?? []) : array_column($cartLines, 'quantity', 'product_id');

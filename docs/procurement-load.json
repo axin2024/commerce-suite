@@ -1,0 +1,1032 @@
+{
+    "status": "passed",
+    "barrier_utc": "2026-11-26T13:21:33+00:00",
+    "environment": {
+        "os": "Windows",
+        "cpu": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+        "logical_processors": "22",
+        "php": "8.2.30",
+        "mysql": "8.4.13",
+        "buffer_pool_bytes": 134217728
+    },
+    "agreement_prices": 10000,
+    "buyers": 100,
+    "warmups_per_buyer": 4,
+    "warm_ms_max": 39.577,
+    "quote_sample_count": 100,
+    "quote_p95_ms": 7.862,
+    "sample_window_ms": 527.402,
+    "outcomes": {
+        "credit_rejected": 90,
+        "ordered": 10
+    },
+    "missing_or_failed_workers": 0,
+    "credit_limit_minor": 900000,
+    "persisted_credit": {
+        "used_minor": "900000",
+        "entries": 10
+    },
+    "budget_used_minor": 900000,
+    "requests": [
+        {
+            "buyer": 5,
+            "rfq": 1,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 5.063,
+            "offset_ms": 15.59,
+            "quote_ms": 7.575,
+            "elapsed_ms": 446.946
+        },
+        {
+            "buyer": 6,
+            "rfq": 2,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 5.549,
+            "offset_ms": 20.826,
+            "quote_ms": 3.643,
+            "elapsed_ms": 446.858
+        },
+        {
+            "buyer": 7,
+            "rfq": 3,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.71,
+            "offset_ms": 14.64,
+            "quote_ms": 6.849,
+            "elapsed_ms": 407.072
+        },
+        {
+            "buyer": 8,
+            "rfq": 4,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 5.074,
+            "offset_ms": 10.22,
+            "quote_ms": 15.96,
+            "elapsed_ms": 512.376
+        },
+        {
+            "buyer": 9,
+            "rfq": 5,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.699,
+            "offset_ms": 18.843,
+            "quote_ms": 4.945,
+            "elapsed_ms": 439.323
+        },
+        {
+            "buyer": 10,
+            "rfq": 6,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.5,
+            "offset_ms": 25.439,
+            "quote_ms": 1.194,
+            "elapsed_ms": 501.963
+        },
+        {
+            "buyer": 11,
+            "rfq": 7,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 5.095,
+            "offset_ms": 10.434,
+            "quote_ms": 1.129,
+            "elapsed_ms": 72.446
+        },
+        {
+            "buyer": 12,
+            "rfq": 8,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.908,
+            "offset_ms": 24.143,
+            "quote_ms": 1.537,
+            "elapsed_ms": 493.628
+        },
+        {
+            "buyer": 13,
+            "rfq": 9,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.555,
+            "offset_ms": 17.018,
+            "quote_ms": 1.746,
+            "elapsed_ms": 171.362
+        },
+        {
+            "buyer": 14,
+            "rfq": 10,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 5.434,
+            "offset_ms": 11.652,
+            "quote_ms": 6.401,
+            "elapsed_ms": 287.207
+        },
+        {
+            "buyer": 15,
+            "rfq": 11,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 5.097,
+            "offset_ms": 7.795,
+            "quote_ms": 1.236,
+            "elapsed_ms": 21.631
+        },
+        {
+            "buyer": 16,
+            "rfq": 12,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 39.577,
+            "offset_ms": 13.941,
+            "quote_ms": 4.943,
+            "elapsed_ms": 323.556
+        },
+        {
+            "buyer": 17,
+            "rfq": 13,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.635,
+            "offset_ms": 11.919,
+            "quote_ms": 1.922,
+            "elapsed_ms": 94.054
+        },
+        {
+            "buyer": 18,
+            "rfq": 14,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.144,
+            "offset_ms": 11.151,
+            "quote_ms": 4.488,
+            "elapsed_ms": 172.456
+        },
+        {
+            "buyer": 19,
+            "rfq": 15,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.234,
+            "offset_ms": 19.886,
+            "quote_ms": 1.273,
+            "elapsed_ms": 259.702
+        },
+        {
+            "buyer": 20,
+            "rfq": 16,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.653,
+            "offset_ms": 10.184,
+            "quote_ms": 7.593,
+            "elapsed_ms": 348.164
+        },
+        {
+            "buyer": 21,
+            "rfq": 17,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.737,
+            "offset_ms": 12.933,
+            "quote_ms": 1.257,
+            "elapsed_ms": 97.484
+        },
+        {
+            "buyer": 22,
+            "rfq": 18,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 4.137,
+            "offset_ms": 7.44,
+            "quote_ms": 2.164,
+            "elapsed_ms": 84.603
+        },
+        {
+            "buyer": 23,
+            "rfq": 19,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 5.263,
+            "offset_ms": 8.37,
+            "quote_ms": 2.456,
+            "elapsed_ms": 55.206
+        },
+        {
+            "buyer": 24,
+            "rfq": 20,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.788,
+            "offset_ms": 11.452,
+            "quote_ms": 4.731,
+            "elapsed_ms": 192.464
+        },
+        {
+            "buyer": 25,
+            "rfq": 21,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.571,
+            "offset_ms": 18.152,
+            "quote_ms": 1.309,
+            "elapsed_ms": 175.108
+        },
+        {
+            "buyer": 26,
+            "rfq": 22,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.273,
+            "offset_ms": 17.405,
+            "quote_ms": 3.373,
+            "elapsed_ms": 350.184
+        },
+        {
+            "buyer": 27,
+            "rfq": 23,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 5.026,
+            "offset_ms": 7.647,
+            "quote_ms": 1.667,
+            "elapsed_ms": 92.565
+        },
+        {
+            "buyer": 28,
+            "rfq": 24,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.262,
+            "offset_ms": 12.405,
+            "quote_ms": 7.873,
+            "elapsed_ms": 427.487
+        },
+        {
+            "buyer": 29,
+            "rfq": 25,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.157,
+            "offset_ms": 16.883,
+            "quote_ms": 4.696,
+            "elapsed_ms": 378.079
+        },
+        {
+            "buyer": 30,
+            "rfq": 26,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.246,
+            "offset_ms": 7.44,
+            "quote_ms": 5.32,
+            "elapsed_ms": 300.491
+        },
+        {
+            "buyer": 31,
+            "rfq": 27,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.705,
+            "offset_ms": 12.684,
+            "quote_ms": 5.216,
+            "elapsed_ms": 315.455
+        },
+        {
+            "buyer": 32,
+            "rfq": 28,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.106,
+            "offset_ms": 11.036,
+            "quote_ms": 4.556,
+            "elapsed_ms": 223.66
+        },
+        {
+            "buyer": 33,
+            "rfq": 29,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 3.773,
+            "offset_ms": 9.714,
+            "quote_ms": 1.344,
+            "elapsed_ms": 49.505
+        },
+        {
+            "buyer": 34,
+            "rfq": 30,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.508,
+            "offset_ms": 16.135,
+            "quote_ms": 5.52,
+            "elapsed_ms": 361.013
+        },
+        {
+            "buyer": 35,
+            "rfq": 31,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.975,
+            "offset_ms": 10.552,
+            "quote_ms": 1.964,
+            "elapsed_ms": 84.558
+        },
+        {
+            "buyer": 36,
+            "rfq": 32,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.188,
+            "offset_ms": 23.281,
+            "quote_ms": 1.608,
+            "elapsed_ms": 449.318
+        },
+        {
+            "buyer": 37,
+            "rfq": 33,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.828,
+            "offset_ms": 16.81,
+            "quote_ms": 1.57,
+            "elapsed_ms": 156.331
+        },
+        {
+            "buyer": 38,
+            "rfq": 34,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.609,
+            "offset_ms": 14.348,
+            "quote_ms": 5.104,
+            "elapsed_ms": 318.467
+        },
+        {
+            "buyer": 39,
+            "rfq": 35,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.544,
+            "offset_ms": 17.116,
+            "quote_ms": 1.444,
+            "elapsed_ms": 161.972
+        },
+        {
+            "buyer": 40,
+            "rfq": 36,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.242,
+            "offset_ms": 19.229,
+            "quote_ms": 3.033,
+            "elapsed_ms": 398.167
+        },
+        {
+            "buyer": 41,
+            "rfq": 37,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.801,
+            "offset_ms": 21.571,
+            "quote_ms": 1.706,
+            "elapsed_ms": 359.852
+        },
+        {
+            "buyer": 42,
+            "rfq": 38,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.171,
+            "offset_ms": 12.135,
+            "quote_ms": 6.396,
+            "elapsed_ms": 304.862
+        },
+        {
+            "buyer": 43,
+            "rfq": 39,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.01,
+            "offset_ms": 16.737,
+            "quote_ms": 1.335,
+            "elapsed_ms": 136.081
+        },
+        {
+            "buyer": 44,
+            "rfq": 40,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.154,
+            "offset_ms": 16.108,
+            "quote_ms": 5.626,
+            "elapsed_ms": 356.874
+        },
+        {
+            "buyer": 45,
+            "rfq": 41,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.664,
+            "offset_ms": 18.871,
+            "quote_ms": 1.401,
+            "elapsed_ms": 189.963
+        },
+        {
+            "buyer": 46,
+            "rfq": 42,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.056,
+            "offset_ms": 19.244,
+            "quote_ms": 3.986,
+            "elapsed_ms": 381.155
+        },
+        {
+            "buyer": 47,
+            "rfq": 43,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.101,
+            "offset_ms": 13.661,
+            "quote_ms": 3.022,
+            "elapsed_ms": 125.437
+        },
+        {
+            "buyer": 48,
+            "rfq": 44,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.259,
+            "offset_ms": 12.848,
+            "quote_ms": 5.263,
+            "elapsed_ms": 281.709
+        },
+        {
+            "buyer": 49,
+            "rfq": 45,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.527,
+            "offset_ms": 18.145,
+            "quote_ms": 5.033,
+            "elapsed_ms": 407.941
+        },
+        {
+            "buyer": 50,
+            "rfq": 46,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.986,
+            "offset_ms": 14.971,
+            "quote_ms": 7.764,
+            "elapsed_ms": 439.413
+        },
+        {
+            "buyer": 51,
+            "rfq": 47,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.316,
+            "offset_ms": 12.924,
+            "quote_ms": 7.356,
+            "elapsed_ms": 376.991
+        },
+        {
+            "buyer": 52,
+            "rfq": 48,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.093,
+            "offset_ms": 12.967,
+            "quote_ms": 7.862,
+            "elapsed_ms": 399.295
+        },
+        {
+            "buyer": 53,
+            "rfq": 49,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.461,
+            "offset_ms": 23.091,
+            "quote_ms": 2.228,
+            "elapsed_ms": 471.552
+        },
+        {
+            "buyer": 54,
+            "rfq": 50,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.868,
+            "offset_ms": 17.399,
+            "quote_ms": 3.795,
+            "elapsed_ms": 367.535
+        },
+        {
+            "buyer": 55,
+            "rfq": 51,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.578,
+            "offset_ms": 22.274,
+            "quote_ms": 1.907,
+            "elapsed_ms": 422.347
+        },
+        {
+            "buyer": 56,
+            "rfq": 52,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.51,
+            "offset_ms": 13.158,
+            "quote_ms": 5.523,
+            "elapsed_ms": 309.586
+        },
+        {
+            "buyer": 57,
+            "rfq": 53,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.797,
+            "offset_ms": 20.009,
+            "quote_ms": 2.332,
+            "elapsed_ms": 330.046
+        },
+        {
+            "buyer": 58,
+            "rfq": 54,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.292,
+            "offset_ms": 24.202,
+            "quote_ms": 1.544,
+            "elapsed_ms": 483.988
+        },
+        {
+            "buyer": 59,
+            "rfq": 55,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.656,
+            "offset_ms": 12.802,
+            "quote_ms": 1.846,
+            "elapsed_ms": 102.962
+        },
+        {
+            "buyer": 60,
+            "rfq": 56,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.91,
+            "offset_ms": 9.595,
+            "quote_ms": 4.664,
+            "elapsed_ms": 139.075
+        },
+        {
+            "buyer": 61,
+            "rfq": 57,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.209,
+            "offset_ms": 7.8,
+            "quote_ms": 3.294,
+            "elapsed_ms": 125.692
+        },
+        {
+            "buyer": 62,
+            "rfq": 58,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.393,
+            "offset_ms": 20.32,
+            "quote_ms": 3.102,
+            "elapsed_ms": 409.735
+        },
+        {
+            "buyer": 63,
+            "rfq": 59,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.384,
+            "offset_ms": 19.183,
+            "quote_ms": 1.968,
+            "elapsed_ms": 237.55
+        },
+        {
+            "buyer": 64,
+            "rfq": 60,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.906,
+            "offset_ms": 7.44,
+            "quote_ms": 2.46,
+            "elapsed_ms": 160.61
+        },
+        {
+            "buyer": 65,
+            "rfq": 61,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.051,
+            "offset_ms": 18.875,
+            "quote_ms": 1.073,
+            "elapsed_ms": 194.529
+        },
+        {
+            "buyer": 66,
+            "rfq": 62,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.29,
+            "offset_ms": 12.789,
+            "quote_ms": 4.284,
+            "elapsed_ms": 216.85
+        },
+        {
+            "buyer": 67,
+            "rfq": 63,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 4.35,
+            "offset_ms": 8.452,
+            "quote_ms": 2.154,
+            "elapsed_ms": 43.646
+        },
+        {
+            "buyer": 68,
+            "rfq": 64,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.396,
+            "offset_ms": 23.342,
+            "quote_ms": 1.676,
+            "elapsed_ms": 458.407
+        },
+        {
+            "buyer": 69,
+            "rfq": 65,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 4.571,
+            "offset_ms": 9.887,
+            "quote_ms": 1.029,
+            "elapsed_ms": 60.466
+        },
+        {
+            "buyer": 70,
+            "rfq": 66,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.563,
+            "offset_ms": 11.734,
+            "quote_ms": 6.324,
+            "elapsed_ms": 277.627
+        },
+        {
+            "buyer": 71,
+            "rfq": 67,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.574,
+            "offset_ms": 22.196,
+            "quote_ms": 2.762,
+            "elapsed_ms": 463.651
+        },
+        {
+            "buyer": 72,
+            "rfq": 68,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.877,
+            "offset_ms": 12.109,
+            "quote_ms": 7.867,
+            "elapsed_ms": 397.059
+        },
+        {
+            "buyer": 73,
+            "rfq": 69,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.72,
+            "offset_ms": 11.95,
+            "quote_ms": 4.89,
+            "elapsed_ms": 272.723
+        },
+        {
+            "buyer": 74,
+            "rfq": 70,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.261,
+            "offset_ms": 17.454,
+            "quote_ms": 7.133,
+            "elapsed_ms": 459.48
+        },
+        {
+            "buyer": 75,
+            "rfq": 71,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.599,
+            "offset_ms": 9.756,
+            "quote_ms": 4.514,
+            "elapsed_ms": 264.663
+        },
+        {
+            "buyer": 76,
+            "rfq": 72,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.115,
+            "offset_ms": 12.29,
+            "quote_ms": 6.838,
+            "elapsed_ms": 329.314
+        },
+        {
+            "buyer": 77,
+            "rfq": 73,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.841,
+            "offset_ms": 19.184,
+            "quote_ms": 1.975,
+            "elapsed_ms": 232.9
+        },
+        {
+            "buyer": 78,
+            "rfq": 74,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.805,
+            "offset_ms": 12.798,
+            "quote_ms": 4.712,
+            "elapsed_ms": 249.655
+        },
+        {
+            "buyer": 79,
+            "rfq": 75,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.939,
+            "offset_ms": 13.657,
+            "quote_ms": 3.088,
+            "elapsed_ms": 129.679
+        },
+        {
+            "buyer": 80,
+            "rfq": 76,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.815,
+            "offset_ms": 15.829,
+            "quote_ms": 4.554,
+            "elapsed_ms": 337.465
+        },
+        {
+            "buyer": 81,
+            "rfq": 77,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 5.777,
+            "offset_ms": 9.874,
+            "quote_ms": 1.594,
+            "elapsed_ms": 75.926
+        },
+        {
+            "buyer": 82,
+            "rfq": 78,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.836,
+            "offset_ms": 8.756,
+            "quote_ms": 3.883,
+            "elapsed_ms": 119.675
+        },
+        {
+            "buyer": 83,
+            "rfq": 79,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.813,
+            "offset_ms": 20.013,
+            "quote_ms": 1.354,
+            "elapsed_ms": 248.528
+        },
+        {
+            "buyer": 84,
+            "rfq": 80,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.907,
+            "offset_ms": 16.13,
+            "quote_ms": 3.405,
+            "elapsed_ms": 330.114
+        },
+        {
+            "buyer": 85,
+            "rfq": 81,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.868,
+            "offset_ms": 19.879,
+            "quote_ms": 1.601,
+            "elapsed_ms": 283.696
+        },
+        {
+            "buyer": 86,
+            "rfq": 82,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.841,
+            "offset_ms": 20.339,
+            "quote_ms": 4.704,
+            "elapsed_ms": 478.686
+        },
+        {
+            "buyer": 87,
+            "rfq": 83,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 2.768,
+            "offset_ms": 7.958,
+            "quote_ms": 1.273,
+            "elapsed_ms": 29.735
+        },
+        {
+            "buyer": 88,
+            "rfq": 84,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.002,
+            "offset_ms": 23.338,
+            "quote_ms": 1.936,
+            "elapsed_ms": 466.315
+        },
+        {
+            "buyer": 89,
+            "rfq": 85,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.763,
+            "offset_ms": 12.671,
+            "quote_ms": 1.514,
+            "elapsed_ms": 109.911
+        },
+        {
+            "buyer": 90,
+            "rfq": 86,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.85,
+            "offset_ms": 12.542,
+            "quote_ms": 4.433,
+            "elapsed_ms": 212.329
+        },
+        {
+            "buyer": 91,
+            "rfq": 87,
+            "outcome": "ordered",
+            "quote_minor": 90000,
+            "warm_ms": 3.58,
+            "offset_ms": 8.453,
+            "quote_ms": 1.462,
+            "elapsed_ms": 36.085
+        },
+        {
+            "buyer": 92,
+            "rfq": 88,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.126,
+            "offset_ms": 11.859,
+            "quote_ms": 4.858,
+            "elapsed_ms": 207.017
+        },
+        {
+            "buyer": 93,
+            "rfq": 89,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.97,
+            "offset_ms": 21.585,
+            "quote_ms": 3.736,
+            "elapsed_ms": 481.821
+        },
+        {
+            "buyer": 94,
+            "rfq": 90,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.979,
+            "offset_ms": 12.306,
+            "quote_ms": 7.981,
+            "elapsed_ms": 437.58
+        },
+        {
+            "buyer": 95,
+            "rfq": 91,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.862,
+            "offset_ms": 8.22,
+            "quote_ms": 2.767,
+            "elapsed_ms": 148.906
+        },
+        {
+            "buyer": 96,
+            "rfq": 92,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.029,
+            "offset_ms": 9.46,
+            "quote_ms": 8.156,
+            "elapsed_ms": 426.16
+        },
+        {
+            "buyer": 97,
+            "rfq": 93,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.432,
+            "offset_ms": 18.988,
+            "quote_ms": 3.556,
+            "elapsed_ms": 386.756
+        },
+        {
+            "buyer": 98,
+            "rfq": 94,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.029,
+            "offset_ms": 14.931,
+            "quote_ms": 4.775,
+            "elapsed_ms": 347.851
+        },
+        {
+            "buyer": 99,
+            "rfq": 95,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.672,
+            "offset_ms": 15.958,
+            "quote_ms": 1.7,
+            "elapsed_ms": 146.102
+        },
+        {
+            "buyer": 100,
+            "rfq": 96,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.596,
+            "offset_ms": 13.196,
+            "quote_ms": 2.997,
+            "elapsed_ms": 184.759
+        },
+        {
+            "buyer": 101,
+            "rfq": 97,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.876,
+            "offset_ms": 19.184,
+            "quote_ms": 1.916,
+            "elapsed_ms": 221.874
+        },
+        {
+            "buyer": 102,
+            "rfq": 98,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 4.155,
+            "offset_ms": 14.506,
+            "quote_ms": 5.992,
+            "elapsed_ms": 298.351
+        },
+        {
+            "buyer": 103,
+            "rfq": 99,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 3.388,
+            "offset_ms": 20.001,
+            "quote_ms": 0.952,
+            "elapsed_ms": 225.685
+        },
+        {
+            "buyer": 104,
+            "rfq": 100,
+            "outcome": "credit_rejected",
+            "quote_minor": 90000,
+            "warm_ms": 2.937,
+            "offset_ms": 23.819,
+            "quote_ms": 1.866,
+            "elapsed_ms": 489.619
+        }
+    ]
+}

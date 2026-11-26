@@ -61,6 +61,14 @@ buyer, north, pond, finance, admin, payout = (Session() for _ in range(6))
 for session, role in zip((buyer, north, pond, finance, admin, payout), ("buyer", "north", "pond", "finance", "admin", "payout")):
     session.login(role)
 assert "审计记录" in admin.load("/?page=platform")
+procurement = "/?page=procurement"
+corp_key = uuid4().hex[:10]
+assert "采购法人已登记" in admin.submit(procurement, "procurement_company", code=corp_key,
+                               billing_name="集团-" + corp_key, email="buyer@example.test")
+company_form = forms(buyer.load(procurement), "procurement_store")[-1]
+store_page = buyer.submit(procurement, "procurement_store", company=extract(company_form, "company"),
+                          code="HQ", name="东店-" + corp_key, center="运营", address="示例路5号")
+assert "东店-" + corp_key in store_page
 assert "审计记录" not in finance.load("/?page=platform")
 try:
     buyer.load("/?page=merchant")
@@ -73,6 +81,33 @@ catalog_a = "/?q=NORTH-01"
 catalog_b = "/?q=POND-01"
 part_a = extract(buyer.load(catalog_a), "product")
 part_b = extract(buyer.load(catalog_b), "product")
+company_id = extract(company_form, "company")
+store_id = extract(forms(store_page, "procurement_grant")[-1], "store")
+supplier_id = re.search(r'<option value="(\d+)">北仓选物（未签约）', store_page)[1]
+authorized = buyer.submit(procurement, "procurement_supplier", company=company_id, shop=supplier_id, enabled=1)
+assert "北仓选物（已签约）" in authorized
+pricing_fields = {"company": company_id, "product": part_a, "revision": 0, "from": "2020-01-01", "until": "2099-12-31"}
+conflict = north.submit(procurement, "procurement_pricing", **pricing_fields, tiers="1,100,0,1000\n100,200,0,900")
+assert "1–100 与 100–200" in conflict
+published = north.submit(procurement, "procurement_pricing", **pricing_fields, tiers="1,99,0,1000\n100,200,0,900")
+assert "企业协议价已发布" in published
+priced = buyer.load(f"{procurement}&store={store_id}&product={part_a}&quantity=100&date=2027-01-01")
+assert "协议版 1 · 数量 100 · 单价 ¥9.00 · 总价 ¥900.00" in priced
+store_url = f"{procurement}&store={store_id}"
+closes = (datetime.now(timezone.utc) + timedelta(seconds=20)).replace(microsecond=0)
+tender_page = buyer.submit(store_url, "procurement_tender", store=store_id, subject="联合采购",
+                           deadline=closes.strftime("%Y-%m-%dT%H:%M:%S"), lines="一批,60\n二批,40", **{"shops[]": supplier_id})
+assert "已发送" in tender_page and "密封中" in tender_page
+invite, = forms(north.load(procurement), "procurement_bid")
+assert "一批" in invite and "二批" in invite
+submitted = north.submit(procurement, "procurement_bid", rfq=extract(invite, "rfq"), revision=0, freight=0,
+                         **{"products[1]": part_a, "products[2]": part_a})
+assert "已记录" in submitted and "本店当前报价版 1" in submitted
+assert "查看报价明细" not in buyer.load(store_url)
+assert "法人授信额度已保存" in finance.submit(procurement, "procurement_limit", company=company_id, credit=100000)
+assert "月度预算已保存" in buyer.submit(store_url, "procurement_budget", store=store_id,
+                                    period=datetime.now(timezone.utc).strftime("%Y-%m"), limit=100000, threshold=100000)
+print("Procurement web flow passed: supplier authorization, rejected overlap, published rates and store quote.")
 guest_cart = Session()
 guest_a = guest_cart.submit(catalog_a, "cart", product=part_a, quantity=2)
 assert "山形帆布托特包" in guest_a and "登录或注册买家账号" in guest_a and not forms(guest_a, "quote")
@@ -696,3 +731,80 @@ if 'value="threshold_steps_v1"' in admin.load(promotion_page):
     assert extract(old_step_quote, "token") != extract(step_quote, "token")
     print("Tiered promotion extension passed: capped checkout and renewed quote confirmation.")
 print("Promotion strategy web flow passed: publishing, scoped checkout, pinned coupon terms, and rule changes.")
+
+time.sleep(max(0, closes.timestamp() - time.time() + 1))
+opened = buyer.load(store_url)
+award_form, = forms(opened, "procurement_award")
+assert "¥900.00" in opened and "已开标" in opened
+api_payload = {"rfq_id": int(extract(award_form, "rfq")), "bid_revision": int(extract(award_form, "bid")),
+               "ship_to": int(store_id), "accepted_lines": [{"line": 1, "qty": 60}, {"line": 2, "qty": 40}]}
+award_key = uuid4().hex
+
+def award_request(body):
+    req = urllib.request.Request(BASE + "/procurement/awards",data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json","X-CSRF-Token": extract(award_form, "csrf"),
+                                          "Idempotency-Key": award_key})
+    try:
+        with buyer.client.open(req,timeout=8) as response:
+            return response.status,json.load(response)
+    except urllib.error.HTTPError as error:
+        with error:
+            return error.code,json.load(error)
+
+status, result = award_request(api_payload)
+assert status == 200 and result["order_id"] and int(result["credit_reserved_minor"]) == 90000, (status,result)
+assert award_request(api_payload) == (200,result)
+assert award_request({**api_payload, "accepted_lines": [{"line": 1,"qty": 10}]})[0] == 409
+assert award_request({**api_payload, "ship_to": 0})[1]["field"] == "ship_to"
+assert "¥100.00" in buyer.load(store_url)
+receipt_fields = {"store": store_id,"order": result["order_id"],"line": 1,"delivery_ref": "DOCK-WEB",
+                  "accepted": 60,"damaged": 0}
+received = buyer.submit(store_url,"procurement_receive",**receipt_fields)
+assert "签收回执 #" in received and "¥540.00" in received
+replayed = buyer.submit(store_url,"procurement_receive",**receipt_fields)
+assert replayed.count("送货单 DOCK-WEB") == 1
+assert "收货超出剩余 0 件" in buyer.submit(store_url,"procurement_receive",**{**receipt_fields,"delivery_ref":"DOCK-EXTRA","accepted":1})
+print("Procurement award HTTP flow passed: sealed opening, order and credit readback, replay and conflicting key.")
+
+receipt_id = int(extract(forms(received,"procurement_return")[0],"receipt"))
+current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+month_end = finance.submit(procurement,"procurement_close",company=company_id,month=current_month)
+statement_id = int(re.search(r"法人账单 #(\d+) 已关账", month_end)[1])
+def download(session, kind, document):
+    body = session.load(f"{procurement}&download={kind}&document={document}")
+    return list(csv.DictReader(body.splitlines()))
+
+frozen = download(finance,"statement",statement_id)
+assert len(frozen) == 1 and int(frozen[0]["amount_minor"]) == 54000
+returned = buyer.submit(store_url,"procurement_return",store=store_id,receipt=receipt_id,reference="RETURN-WEB",quantity=10)
+credit_id = int(re.search(r"退货贷项 #(\d+) 已入账",returned)[1])
+credit_row, = download(finance,"credit",credit_id)
+received_row, = download(buyer,"receipt",receipt_id)
+for key in ("award_id","order_id","line_no","receipt_id"):
+    assert frozen[0][key] == credit_row[key] == received_row[key]
+assert credit_row["period"] > frozen[0]["period"] and int(credit_row["amount_minor"]) == -9000
+assert frozen == download(finance,"statement",statement_id)
+csv_text = f"bank_ref,value_date,amount_minor\nBANK-WEB,{current_month}-01,40000\n"
+_, bank_page = finance.upload_bill(csv_text,company=company_id,csrf=extract(month_end,"csrf"))
+bank_form, = forms(bank_page,"procurement_allocate")
+applied = finance.submit(procurement,"procurement_allocate",bank=extract(bank_form,"bank"),company=company_id,
+                         line=frozen[0]["billing_line_id"],amount=40000,key=extract(bank_form,"key"))
+assert "核销回执 #" in applied and "待核销 ¥0.00" in applied
+assert "待核销 ¥0.00" in finance.upload_bill(csv_text,company=company_id,csrf=extract(applied,"csrf"))[1]
+print("Procurement month close and credit export passed:",json.dumps({"receipt":received_row,"statement":frozen[0],"credit":credit_row}))
+
+receiving_user = Session()
+receiver_email = f"warehouse-{uuid4().hex[:12]}@example.test"
+receiving_user.submit("/?page=account","register",email=receiver_email,password="WarehouseFixture-2026")
+buyer.submit(store_url,"procurement_grant",store=store_id,email=receiver_email,duty="receiver")
+bookmark = f"{store_url}&order={result['order_id']}"
+assert "登记到货" in receiving_user.load(bookmark) and "发起询价" not in receiving_user.load(bookmark)
+buyer.submit(store_url,"procurement_revoke",store=store_id,email=receiver_email)
+try:
+    receiving_user.load(bookmark)
+except urllib.error.HTTPError as error:
+    assert error.code == 404
+else:
+    raise AssertionError("revoked receiver retained order access")
+preview_page = north.load(f"{procurement}&preview_company={company_id}&preview_sku={part_a}&quantity=100&date=2027-01-01")
+assert "100–200 件 · 单价 ¥9.00" in preview_page

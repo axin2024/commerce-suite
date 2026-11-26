@@ -32,13 +32,14 @@ class Session:
         self.submit("/?page=account", "login", email=f"{role}@example.test", password="CommerceDemo-2026")
         assert f"{role}@example.test" in self.load("/?page=account"), f"{role} login"
 
-    def upload_bill(self, csv_text, csrf=None):
+    def upload_bill(self, csv_text, csrf=None, company=None):
         if csrf is None:
             csrf = extract(self.load("/?page=channel_bills"), "csrf")
         boundary = f"commerce-fixture-{uuid4().hex}"
         body = "\r\n".join((
             f"--{boundary}", 'Content-Disposition: form-data; name="csrf"', "", csrf,
-            f"--{boundary}", 'Content-Disposition: form-data; name="action"', "", "bill_import",
+            f"--{boundary}", 'Content-Disposition: form-data; name="action"', "", "procurement_import" if company else "bill_import",
+            *([f"--{boundary}", 'Content-Disposition: form-data; name="company"', "", str(company)] if company else []),
             f"--{boundary}", 'Content-Disposition: form-data; name="bill"; filename="statement.csv"',
             "Content-Type: text/csv", "", csv_text, f"--{boundary}--", "",
         )).encode()
