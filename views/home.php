@@ -67,15 +67,13 @@ $claimed = $role === 'buyer' ? array_column($app->buyerCoupons((int) $user['id']
                 <?php if ($role === 'buyer' && $user['member_level'] === 'plus' && $p['member_price'] !== null): ?>
                     <p>会员价 <strong><?= cash($p['member_price']) ?></strong></p>
                 <?php endif; ?>
-                <?php if ($role === 'buyer' && $available): ?>
+                <?php if (in_array($role, ['guest', 'buyer'], true) && $available): ?>
                     <?php form('cart'); echo field('product', $p['id']); ?>
                     <div class="inline">
                         <input type="number" name="quantity" min="1" max="<?= min(99, $available) ?>" value="<?= min($available, (int) ($cart[$p['id']] ?? 1)) ?>" aria-label="<?= e($p['name']) ?>的购买数量" required>
                         <button>设置购物车数量</button>
                     </div>
                     </form>
-                <?php elseif ($role === 'guest' && $available): ?>
-                    <a class="button secondary" href="/?page=account">登录后选购</a>
                 <?php endif; ?>
                 <?php foreach ($preorders[$p['id']] ?? [] as $batch): ?>
                     <div class="inventory">

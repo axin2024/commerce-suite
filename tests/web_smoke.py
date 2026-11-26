@@ -73,6 +73,21 @@ catalog_a = "/?q=NORTH-01"
 catalog_b = "/?q=POND-01"
 part_a = extract(buyer.load(catalog_a), "product")
 part_b = extract(buyer.load(catalog_b), "product")
+guest_cart = Session()
+guest_a = guest_cart.submit(catalog_a, "cart", product=part_a, quantity=2)
+assert "山形帆布托特包" in guest_a and "登录或注册买家账号" in guest_a and not forms(guest_a, "quote")
+guest_cart.submit(catalog_b, "cart", product=part_b, quantity=1)
+assert "购物车为空" in Session().load("/?page=cart")
+assert "购物车为空" in buyer.load("/?page=cart")
+buyer.submit(catalog_a, "cart", product=part_a, quantity=1)
+guest_cart.login("buyer")
+merged = guest_cart.load("/?page=cart")
+assert "湖蓝陶瓷早餐杯" in merged and len(forms(merged, "quote")) == 1
+for line in forms(merged, "cart"):
+    assert 'name="quantity" value="1"' in line
+assert len(forms(merged, "cart")) == 2
+assert len(forms(buyer.load("/?page=cart"), "cart")) == 2
+print("Guest cart web flow passed: anonymous isolation, account merge, and existing quantity preservation.")
 coupon = extract(buyer.load(catalog_a), "promotion")
 assert "优惠券已领取" in buyer.submit(catalog_a, "claim_coupon", promotion=coupon)
 assert "该优惠券已领取" in buyer.submit(catalog_a, "claim_coupon", promotion=coupon)
@@ -269,12 +284,13 @@ if REFUND_SECRET:
             f"return_refund,{order_id},{refund_payload['reference']},CNY,10800",
             f"capture,{order_id},missing-{uuid4().hex},CNY,18000",
             f"capture,{order_id},invalid-reference,CNY,not-a-number",
+            f"capture,{order_id},missing-{uuid4().hex},CNY,18000",
         ))
         assert finance.load("/channel-bill-sample.csv").startswith("kind,order_id,reference,currency,amount_minor")
         assert "表单已失效" in finance.upload_bill(statement, csrf="invalid")[1]
         assert "CSV 表头" in finance.upload_bill("invalid-header")[1]
         query, queued_bill = finance.upload_bill(statement)
-        assert "待核对 3" in queued_bill and "格式错误 1" in queued_bill
+        assert "待核对 4" in queued_bill and "格式错误 1" in queued_bill
         assert finance.upload_bill(statement)[0] == query
         bill = urllib.parse.parse_qs(query)["bill"][0]
         bill_path = "/?" + query
@@ -287,16 +303,25 @@ if REFUND_SECRET:
             php = ["php", "-d", "extension=pdo_mysql"] if os.name == "nt" else ["php"]
             subprocess.run([*php, "bin/worker.php", "--once"], check=True, timeout=15)
             report = finance.load(bill_path)
-            assert "已匹配 2" in report and "待补回执 1" in report and "格式错误 1" in report
+            assert "已匹配 2" in report and "待补回执 2" in report and "格式错误 1" in report
             sources = re.findall(r'href="(/\?page=platform&amp;[^"]+)">本地回执 #\d+</a>', report)
             assert len(sources) == 2
             assert payload["reference"] in finance.load(sources[0].replace("&amp;", "&"))
             assert refund_payload["reference"] in finance.load(sources[1].replace("&amp;", "&"))
             merchant_report = north.load("/?" + merchant_query)
-            assert "已核对 3" in merchant_report and "本地回执 #" not in merchant_report
+            assert "已核对 4" in merchant_report and "本地回执 #" not in merchant_report
+            retry_form, = forms(report, "bill_retry_selection")
+            assert re.findall(r'name="lines\[\]" value="(\d+)"', retry_form) == ["4", "6"]
+            assert "请选择 1 至" in finance.submit(bill_path, "bill_retry_selection", bill=bill)
+            selection = finance.submit(bill_path, "bill_retry_selection", bill=bill,
+                                       **{"lines[0]": 4, "lines[1]": 5, "lines[2]": 7, "lines[3]": 4})
+            assert "第 4 行 · 已重新排队" in selection and selection.count("第 4 行 ·") == 1
+            assert "第 5 行 · 未重新排队（格式错误）" in selection and "第 7 行 · 当前任务中没有此记录" in selection
+            assert "待核对 1" in selection and "待补回执 1" in selection
+            assert "第 4 行 · 已重新排队" in finance.load(bill_path)
             replay = finance.submit(bill_path, "bill_retry", bill=bill)
-            assert "重新排队 1 条记录" in replay and "待核对 1" in replay
-            print("Channel bill web flow passed: upload, replay, queue results, receipt links, tenant scope, and retry.")
+            assert "重新排队 1 条记录" in replay and "待核对 2" in replay
+            print("Channel bill web flow passed: upload, replay, receipt links, tenant scope, and selected and whole-batch retry.")
 print("Web flow passed: login, shared cart, checkout, payment, store pickup, and repeat scan.")
 
 suffix = uuid4().hex[:8]
@@ -360,6 +385,7 @@ owner.submit("/?page=merchant", "pickup_location_save", pickup_location=0, wareh
 variant_quote = buyer.submit("/?page=cart", "quote", channel="store", **pickup_choices(buyer.load("/?page=cart")))
 owner.submit("/?page=merchant", "sku_unlist", product=variant_product)
 blocked = buyer.submit("/?page=cart", "place", token=extract(variant_quote, "token"))
+assert not forms(blocked, "place")
 assert "商品已下架" in blocked
 assert "当前没有符合条件的商品" in buyer.load(listing)
 print("Catalog web flow passed: category, variant, review, channel filter, unlisting, and stale checkout rejection.")
@@ -594,11 +620,16 @@ assert "运费规则已更新" in north.submit(merchant_path, "freight_publish",
                                         strategy="per_order_v1", base_fee="8.00")
 stale = freight_buyer.submit("/?page=cart", "place", token=extract(old_freight, "token"))
 assert "运费、积分规则或分仓结果已变化" in stale
-
-paid_freight = freight_buyer.submit("/?page=cart", "quote", channel="web", destination="运费规则测试地址")
-assert "运费</dt><dd>¥6.00" in paid_freight and "¥126.00" in paid_freight
-placed_freight = freight_buyer.submit("/?page=cart", "place", token=extract(paid_freight, "token"))
+assert "报价变更" in stale and "确认新报价并下单" in stale
+assert "¥8.00</td><td>¥6.00" in stale and "¥128.00</td><td>¥126.00" in stale
+replacement_token = extract(stale, "token")
+assert replacement_token != extract(old_freight, "token")
+assert not forms(freight_buyer.load("/?page=orders"), "cancel")
+placed_freight = freight_buyer.submit("/?page=cart", "place", token=replacement_token)
 freight_parent = extract(placed_freight, "order")
+assert "¥126.00" in placed_freight
+same_freight_order = freight_buyer.submit("/?page=orders", "place", token=replacement_token)
+assert extract(same_freight_order, "order") == freight_parent
 published = north.submit(merchant_path, "freight_publish", revision=paid_freight_revision,
                          strategy="per_order_v1", base_fee="6.00", free_threshold="120.00")
 freight_form, = forms(published, "freight_publish")
@@ -661,6 +692,7 @@ if 'value="threshold_steps_v1"' in admin.load(promotion_page):
     assert "阶梯优惠验收" in step_quote and "−¥22.00" in step_quote and "¥178.00" in step_quote
     admin.submit(promotion_page, "promotion_publish", **tiered)
     old_step_quote = strategy_buyer.submit("/?page=cart", "place", token=extract(step_quote, "token"))
-    assert "请重新报价" in old_step_quote
-    print("Tiered promotion extension passed: capped checkout and stale revision rejection.")
+    assert "请核对新报价后重新确认" in old_step_quote
+    assert extract(old_step_quote, "token") != extract(step_quote, "token")
+    print("Tiered promotion extension passed: capped checkout and renewed quote confirmation.")
 print("Promotion strategy web flow passed: publishing, scoped checkout, pinned coupon terms, and rule changes.")

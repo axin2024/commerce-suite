@@ -67,9 +67,13 @@ function redirect(string $page, array $params = []): never
 
 function loginAs(array $user): void
 {
+    $cart = $_SESSION['cart'] ?? [];
     session_regenerate_id(true);
     $_SESSION = ['user' => (int) $user['id'], 'csrf' => bin2hex(random_bytes(32)),
         'access_version' => $user['access_version'] ?? null];
+    if ($user['role'] === 'buyer' && $cart) {
+        $_SESSION['cart'] = $cart;
+    }
 }
 
 function e(string|int|null $value): string
@@ -138,8 +142,11 @@ try {
     }
     $role = $user['role'] ?? 'guest';
     if ($role === 'buyer' && isset($_SESSION['cart'])) {
-        $app->importSessionCart($id, $_SESSION['cart']);
+        $skipped = $app->importSessionCart($id, $_SESSION['cart']);
         unset($_SESSION['cart'], $_SESSION['quote']);
+        if ($skipped) {
+            $_SESSION['notice'] = "$skipped 种商品未合并。购物车最多容纳 30 种 SKU，已移除的商品也无法合并。";
+        }
     }
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -174,21 +181,21 @@ try {
                         throw new RuleViolation('邮箱或密码有误。');
                     }
                     loginAs($app->profile($login));
-                    redirect('home');
+                    redirect(isset($_SESSION['cart']) ? 'cart' : 'home');
                 case 'register':
                     if ($id) {
                         throw new RuleViolation('请退出当前账号后再注册。');
                     }
                     $account = $app->register(input('email'), input('password'), input('shop'));
                     loginAs($app->profile($account));
-                    redirect('home');
+                    redirect(isset($_SESSION['cart']) ? 'cart' : 'home');
                 case 'logout':
                     $_SESSION = [];
                     session_regenerate_id(true);
                     redirect('home');
                 case 'cart':
                     $next = 'cart';
-                    if ($role !== 'buyer') {
+                    if (!in_array($role, ['guest', 'buyer'], true)) {
                         $next = 'account';
                         throw new RuleViolation('请先使用买家账号登录。');
                     }
@@ -197,6 +204,26 @@ try {
                     $revision = input('revision');
                     $selected = $revision === '' || input('selected') === '1';
                     $batch = input('preorder_batch') === '' ? null : number('preorder_batch');
+                    if ($role === 'guest') {
+                        if ($batch !== null) {
+                            throw new RuleViolation('请先登录后预订。');
+                        }
+                        $cart = $_SESSION['cart'] ?? [];
+                        if ($qty === 0) {
+                            unset($cart[$productId]);
+                        } else {
+                            $sku = $app->guestCartLines([$productId => $qty])[0] ?? null;
+                            if (!$sku || !$sku['on_sale']) {
+                                throw new RuleViolation('该商品目前不可加入购物车。');
+                            }
+                            if (!isset($cart[$productId]) && count($cart) >= 30) {
+                                throw new RuleViolation('购物车最多容纳 30 种 SKU。');
+                            }
+                            $cart[$productId] = $qty;
+                        }
+                        $_SESSION['cart'] = $cart;
+                        break;
+                    }
                     $app->setCartLine($id, $productId, $qty, $selected, $revision === '' ? null : $revision, $batch);
                     break;
                 case 'quote':
@@ -227,8 +254,21 @@ try {
                     break;
                 case 'place':
                     $next = 'cart';
-                    $order = $app->place($id, input('token'), requireCartQuote: true);
-                    if (($_SESSION['quote']['token'] ?? null) === input('token')) {
+                    $token = input('token');
+                    try {
+                        $order = $app->confirmCartQuote($id, $token);
+                    } catch (RuleViolation $error) {
+                        if (($_SESSION['quote']['token'] ?? null) === $token) {
+                            $_SESSION['quote']['requires_refresh'] = true;
+                        }
+                        throw $error;
+                    }
+                    if (is_array($order)) {
+                        $_SESSION['quote'] = $order;
+                        $_SESSION['notice'] = '商品、价格、运费、积分规则或分仓结果已变化，请核对新报价后重新确认。';
+                        redirect('cart');
+                    }
+                    if (($_SESSION['quote']['token'] ?? null) === $token) {
                         unset($_SESSION['quote']);
                     }
                     $paymentState = $app->rows('SELECT status FROM orders WHERE id=? AND buyer_id=?', [$order, $id])[0]['status'];
@@ -488,6 +528,20 @@ try {
                     $count = $app->retryChannelBill($id, $billId);
                     $_SESSION['notice'] = '重新排队 ' . $count . ' 条记录。';
                     redirect($next, $nextParams);
+                case 'bill_retry_selection':
+                    $next = 'channel_bills';
+                    $billId = number('bill');
+                    $nextParams = ['bill' => $billId];
+                    $lines = $_POST['lines'] ?? [];
+                    if (!is_array($lines) || count($lines) > Commerce::CHANNEL_BILL_RETRY_LIMIT) {
+                        throw new RuleViolation('请选择 1 至 ' . Commerce::CHANNEL_BILL_RETRY_LIMIT . ' 条明细重新核对。');
+                    }
+                    $lines = array_map(static fn(mixed $line): int => is_string($line)
+                        ? (filter_var($line, FILTER_VALIDATE_INT) ?: 0) : 0, $lines);
+                    $_SESSION['bill_retry_selection'] = [
+                        'bill' => $billId, 'results' => $app->retryChannelBillSelection($id, $billId, $lines),
+                    ];
+                    redirect($next, $nextParams);
                 default:
                     throw new RuleViolation('未知操作。');
             }
@@ -507,7 +561,7 @@ try {
     $scope = [
         'home' => ['guest', 'buyer', 'merchant', 'admin', 'finance', 'payout'],
         'account' => ['guest', 'buyer', 'merchant', 'admin', 'finance', 'payout'],
-        'cart' => ['buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
+        'cart' => ['guest', 'buyer'], 'orders' => ['buyer'], 'merchant' => ['merchant'], 'platform' => ['admin', 'finance'],
         'settlements' => ['admin', 'finance', 'merchant', 'payout'],
         'channel_bills' => ['finance', 'merchant'],
         'merchant_orders' => ['merchant'], 'sales_channels' => ['merchant'],
@@ -547,7 +601,10 @@ try {
         $page = 'account';
     }
     $cartLines = $role === 'buyer' ? $app->cartLines($id) : [];
-    $cart = array_column($cartLines, 'quantity', 'product_id');
+    $cart = $role === 'guest' ? ($_SESSION['cart'] ?? []) : array_column($cartLines, 'quantity', 'product_id');
+    if ($role === 'guest' && $page === 'cart') {
+        $cartLines = $app->guestCartLines($cart);
+    }
     ob_start();
     require __DIR__ . '/../views/layout.php';
     ob_end_flush();

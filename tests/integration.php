@@ -319,6 +319,17 @@ $staleSettlement = $app->previewSettlement($finance, $northShop, $openingPeriod,
 same(9720, $staleSettlement['net'], 'sale preview before the merchant return is confirmed');
 denied(fn() => $returnReceipt("return-paid-$tag", 10801), 'channel cannot exceed the authorized amount');
 denied(fn() => $returnReceipt("return-paid-$tag", 10800, "unrelated-$tag"), 'refund is bound to the original payment');
+$changeCapture = $db->prepare('UPDATE payments SET amount=? WHERE provider=? AND reference=?');
+$captured = (int) $app->rows('SELECT amount FROM payments WHERE provider=? AND reference=?', ['demo', "pay-$tag"])[0]['amount'];
+$changeCapture->execute([10799, 'demo', "pay-$tag"]);
+try {
+    denied(fn() => $returnReceipt("return-paid-$tag", 10800), 'approved refund cannot exceed the captured amount');
+    same('refund_pending', $returnDetails($refund)['status'], 'capture limit rejection leaves refund pending');
+    same([['kind' => 'sale']], $app->rows('SELECT kind FROM ledger WHERE merchant_order_id=?', [$northOrder]),
+        'capture limit rejection does not post a refund');
+} finally {
+    $changeCapture->execute([$captured, 'demo', "pay-$tag"]);
+}
 same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'accepted return refunds 108');
 same(['refund_id' => $refund, 'status' => 'refunded'], $returnReceipt("return-paid-$tag", 10800), 'signed refund repeat has no side effects');
 denied(fn() => $returnReceipt("changed-ref-$tag", 10800), 'confirmed intent cannot be assigned to another refund receipt');
@@ -451,7 +462,8 @@ denied(fn() => $app->setCartLine($buyer, $a, 0, true, $oldRevision), 'stale cart
 $app->setCartLine($buyer, $a, 0, true);
 $app->setCartLine($buyer, $a, 1, true);
 denied(fn() => $app->place($buyer, $cartQuote['token'], requireCartQuote: true), 'reinserted line retains no stale quote');
-$app->importSessionCart($buyer, [$a => 3, $b => 5, PHP_INT_MAX => 1]);
+same(1, $app->importSessionCart($buyer, [$a => 3, $b => 5, PHP_INT_MAX => 1]),
+    'a vanished guest SKU is reported without discarding existing cart lines');
 same([1, 2], array_map('intval', array_column($app->cartLines($buyer), 'quantity')),
     'legacy session merge preserves existing persistent cart');
 $app->importSessionCart($otherBuyer, [$b => 1]);

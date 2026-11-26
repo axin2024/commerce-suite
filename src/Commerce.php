@@ -385,6 +385,23 @@ final class Commerce
             WHERE c.buyer_id=? ORDER BY c.product_id", [$buyer]);
     }
 
+    public function guestCartLines(array $cart): array
+    {
+        if (!$cart) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($cart), '?'));
+        $lines = $this->rows("SELECT p.id AS product_id,p.sku,p.name,p.price,p.stock-p.reserved AS available,
+            r.color,r.size,s.name AS shop_name,(p.status='active' AND s.status='active') AS on_sale
+            FROM products p JOIN shops s ON s.id=p.shop_id JOIN product_releases r ON r.id=p.release_id
+            WHERE p.id IN ($placeholders) ORDER BY p.id", array_keys($cart));
+        foreach ($lines as &$line) {
+            $line['quantity'] = $cart[$line['product_id']];
+        }
+        unset($line);
+        return $lines;
+    }
+
     public function setCartLine(
         int $buyer, int $product, int $quantity, bool $selected, ?string $revision = null, ?int $preorderBatch = null,
     ): void {
@@ -428,24 +445,29 @@ final class Commerce
         });
     }
 
-    public function importSessionCart(int $buyer, array $cart): void
+    public function importSessionCart(int $buyer, array $cart): int
     {
         $this->actor($buyer, 'buyer');
-        $this->transaction(function () use ($buyer, $cart): void {
+        return $this->transaction(function () use ($buyer, $cart): int {
             $this->lockCart($buyer);
-            $remaining = 30 - (int) $this->one('SELECT COUNT(*) AS total FROM cart_lines WHERE buyer_id=?', [$buyer])['total'];
+            $existing = array_fill_keys(array_column(
+                $this->rows('SELECT product_id FROM cart_lines WHERE buyer_id=?', [$buyer]), 'product_id'), true);
+            $remaining = 30 - count($existing);
+            $skipped = 0;
             foreach ($cart as $product => $quantity) {
-                if ($remaining <= 0) {
-                    break;
+                if (isset($existing[$product]) || !is_int($product) || !is_int($quantity) || $quantity < 1 || $quantity > 99) {
+                    continue;
                 }
-                if (!is_int($product) || !is_int($quantity) || $quantity < 1 || $quantity > 99) {
+                if ($remaining <= 0) {
+                    $skipped++;
                     continue;
                 }
                 $insert = $this->query('INSERT INTO cart_lines (buyer_id,product_id,quantity,revision)
-                    SELECT ?,p.id,?,? FROM products p LEFT JOIN cart_lines c ON c.product_id=p.id AND c.buyer_id=?
-                    WHERE p.id=? AND c.product_id IS NULL', [$buyer, $quantity, bin2hex(random_bytes(16)), $buyer, $product]);
+                    SELECT ?,p.id,?,? FROM products p WHERE p.id=?', [$buyer, $quantity, bin2hex(random_bytes(16)), $product]);
                 $remaining -= $insert->rowCount();
+                $skipped += 1 - $insert->rowCount();
             }
+            return $skipped;
         });
     }
 
@@ -646,8 +668,18 @@ final class Commerce
 
     public function place(int $buyer, string $token, bool $requireCartQuote = false): int
     {
+        return $this->placeQuote($buyer, $token, $requireCartQuote, false);
+    }
+
+    public function confirmCartQuote(int $buyer, string $token): int|array
+    {
+        return $this->placeQuote($buyer, $token, true, true);
+    }
+
+    private function placeQuote(int $buyer, string $token, bool $requireCartQuote, bool $refresh): int|array
+    {
         $this->actor($buyer, 'buyer');
-        return $this->transaction(function () use ($buyer, $token, $requireCartQuote): int {
+        return $this->transaction(function () use ($buyer, $token, $requireCartQuote, $refresh): int|array {
             $this->lockCart($buyer);
             $quote = $this->one('SELECT *, expires_at <= UTC_TIMESTAMP() AS expired
                 FROM quotes WHERE token=? AND buyer_id=? FOR UPDATE', [$token, $buyer]);
@@ -691,6 +723,10 @@ final class Commerce
                 $snapshot['coupon'] ?? null, true, $snapshot['pickup_locations'], $snapshot['preorders'], $snapshot['loyalty']['spent'] ?? 0);
             // MySQL JSON normalizes object key order.
             if ($snapshot != $current) {
+                if ($refresh) {
+                    $current['cart_revisions'] = $cartRevisions;
+                    return $this->recordQuote($buyer, $current) + ['previous' => $snapshot];
+                }
                 throw new RuleViolation('商品、价格、运费、积分规则或分仓结果已变化，请重新报价。');
             }
             if ($current['total'] > 0 && $this->paymentChannels->checkoutProvider === null && !demoEnabled()) {

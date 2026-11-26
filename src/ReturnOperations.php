@@ -276,6 +276,13 @@ trait ReturnOperations
                     throw new RuleViolation('退款回执与申请金额或流水不符。');
                 }
                 if ($refund['status'] === 'refund_pending') {
+                    $capture = $this->one('SELECT amount FROM payments WHERE order_id=? FOR UPDATE', [$order]);
+                    $confirmed = $this->rows("SELECT r.amount FROM refunds r JOIN order_items i ON i.id=r.item_id
+                        JOIN merchant_orders m ON m.id=i.merchant_order_id
+                        WHERE m.order_id=? AND r.status='refunded' FOR SHARE OF r", [$order]);
+                    if ($capture === null || $amount > (int) $capture['amount'] - array_sum(array_column($confirmed, 'amount'))) {
+                        throw new RuleViolation('退款金额超过原支付剩余可退金额，请人工核对。');
+                    }
                     $this->query("UPDATE refunds SET status='refunded',refund_reference=?,refund_provider=?,confirmed_at=UTC_TIMESTAMP()
                         WHERE id=?", [$reference, $provider, $id]);
                     $this->query('UPDATE order_items SET refunded_quantity=refunded_quantity+? WHERE id=?',

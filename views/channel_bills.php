@@ -30,7 +30,10 @@ try {
 ?>
 <div class="heading"><h1><?= $role === 'finance' ? '渠道对账' : '渠道回执上传' ?></h1></div>
 <?php if ($billId):
-    $counts = array_count_values(array_column($bill['rows'], 'status')); ?>
+    $counts = array_count_values(array_column($bill['rows'], 'status'));
+    $retry = $_SESSION['bill_retry_selection'] ?? [];
+    $retryResults = $role === 'finance' && ($retry['bill'] ?? null) === $billId ? $retry['results'] : [];
+    $canRetry = $role === 'finance' && !empty($counts['awaiting_receipt']); ?>
     <section class="panel">
         <div class="heading">
             <h2>账单任务 #<?= e($billId) ?></h2>
@@ -45,14 +48,38 @@ try {
         <?php if (!empty($counts['queued'])): ?>
             <p><a href="/?page=channel_bills&amp;bill=<?= e($billId) ?>">刷新处理进度</a></p>
         <?php endif; ?>
-        <?php if ($role === 'finance' && !empty($counts['awaiting_receipt'])):
+        <?php if ($canRetry):
             form('bill_retry'); echo field('bill', $billId); ?>
-            <button class="secondary">重新核对待补回执</button></form>
+            <button class="secondary">重新核对全部待补回执</button></form>
+        <?php endif; ?>
+        <?php if ($retryResults): ?>
+            <details open>
+                <summary>上次所选记录的处理结果</summary>
+                <ul>
+                    <?php foreach ($retryResults as $line => $state): ?>
+                        <li>第 <?= e($line) ?> 行 · <?= e(match ($state) {
+                            'requeued' => '已重新排队',
+                            'missing' => '当前任务中没有此记录',
+                            default => '未重新排队（' . $states[$state] . '）',
+                        }) ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </details>
+        <?php endif; ?>
+        <?php if ($canRetry):
+            form('bill_retry_selection'); echo field('bill', $billId); ?>
+            <p>勾选待补回执的记录，每次最多 <?= e(Commerce::CHANNEL_BILL_RETRY_LIMIT) ?> 条。</p>
         <?php endif; ?>
         <div class="table-wrap"><table>
-            <thead><tr><th>记录序号</th><th>业务</th><th>母单</th><th>流水</th><th>币种</th><th>金额（分）</th><th>处理结果</th></tr></thead>
+            <thead><tr><?php if ($canRetry): ?><th>重试</th><?php endif; ?><th>记录序号</th><th>业务</th><th>母单</th><th>流水</th><th>币种</th><th>金额（分）</th><th>处理结果</th></tr></thead>
             <tbody><?php foreach ($bill['rows'] as $row): ?>
                 <tr>
+                    <?php if ($canRetry): ?>
+                        <td><?php if ($row['status'] === 'awaiting_receipt'): ?>
+                            <input type="checkbox" name="lines[]" value="<?= e($row['line_no']) ?>"
+                                aria-label="重新核对第 <?= e($row['line_no']) ?> 行"<?= isset($retryResults[$row['line_no']]) ? ' checked' : '' ?>>
+                        <?php endif; ?></td>
+                    <?php endif; ?>
                     <td><?= e($row['line_no']) ?></td>
                     <td><?= e($kinds[$row['kind']] ?? '—') ?></td>
                     <td><?= e($row['order_id'] ?? '—') ?></td>
@@ -73,6 +100,7 @@ try {
                 </tr>
             <?php endforeach; ?></tbody>
         </table></div>
+        <?php if ($canRetry): ?><p><button>重新核对所选记录</button></p></form><?php endif; ?>
     </section>
     <?php return;
 endif;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 trait ChannelBillOperations
 {
     public const CHANNEL_BILL_MAX_BYTES = 262144;
+    public const CHANNEL_BILL_RETRY_LIMIT = 200;
     private const CHANNEL_BILL_HEADER = ['kind', 'order_id', 'reference', 'currency', 'amount_minor'];
 
     public function importChannelBill(int $actor, string $csv): int
@@ -56,6 +57,39 @@ trait ChannelBillOperations
                 $this->audit($finance, 'channel_bill.requeued', $import, ['rows' => $requeued]);
             }
             return $requeued;
+        });
+    }
+
+    public function retryChannelBillSelection(int $finance, int $import, array $lines): array
+    {
+        $this->actor($finance, 'finance');
+        if (!$lines || count($lines) > self::CHANNEL_BILL_RETRY_LIMIT) {
+            throw new RuleViolation('请选择 1 至 ' . self::CHANNEL_BILL_RETRY_LIMIT . ' 条明细重新核对。');
+        }
+        foreach ($lines as $line) {
+            if (!is_int($line) || $line < 2 || $line > 1001) {
+                throw new RuleViolation('账单记录序号无效。');
+            }
+        }
+        $lines = array_unique($lines);
+        sort($lines, SORT_NUMERIC);
+        return $this->transaction(function () use ($finance, $import, $lines): array {
+            $this->channelBillImport($finance, $import);
+            $placeholders = implode(',', array_fill(0, count($lines), '?'));
+            $entries = $this->rows("SELECT line_no,status FROM channel_bill_rows
+                WHERE import_id=? AND line_no IN ($placeholders) ORDER BY line_no FOR UPDATE", [$import, ...$lines]);
+            $states = array_column($entries, 'status', 'line_no');
+            $results = [];
+            foreach ($lines as $line) {
+                $status = $states[$line] ?? 'missing';
+                if ($status === 'awaiting_receipt') {
+                    $this->query("UPDATE channel_bill_rows SET status='queued' WHERE import_id=? AND line_no=?", [$import, $line]);
+                    $status = 'requeued';
+                }
+                $results[$line] = $status;
+            }
+            $this->audit($finance, 'channel_bill.selection_requeued', $import, ['results' => $results]);
+            return $results;
         });
     }
 

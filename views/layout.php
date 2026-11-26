@@ -15,6 +15,8 @@
             <?php if ($role === 'buyer'): ?>
                 <a href="/?page=cart">购物车 <span class="counter"><?= count($cart) ?></span></a>
                 <a href="/?page=orders">我的订单</a>
+            <?php elseif ($role === 'guest'): ?>
+                <a href="/?page=cart">购物车 <span class="counter"><?= count($cart) ?></span></a>
             <?php elseif ($role === 'merchant'): ?>
                 <a href="/?page=merchant">商家中心</a>
             <?php elseif ($role === 'admin' || $role === 'finance'): ?>

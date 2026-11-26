@@ -10,15 +10,18 @@
                     <div><strong><?= e($line['name']) ?></strong>
                         <div class="muted"><?= e($line['shop_name']) ?> · <?= e($line['sku']) ?>
                             <?= e(trim((string) $line['color'] . ' ' . (string) $line['size'])) ?> · <?= cash($line['price']) ?></div>
-                        <?php if ($line['preorder_code']): ?>
+                        <?php if (!empty($line['preorder_code'])): ?>
                             <div class="muted">预售 <?= e($line['preorder_code']) ?> · 预计 <?= e($line['expected_on']) ?> 到货</div>
                         <?php endif; ?>
                         <?php if (!$line['on_sale'] || $line['available'] < $line['quantity']): ?>
-                            <div class="muted"><?= $line['on_sale'] ? ($line['preorder_code'] ? '预售剩余额度不足' : '可用库存不足') : '暂停销售' ?></div>
+                            <div class="muted"><?= $line['on_sale'] ? (!empty($line['preorder_code']) ? '预售剩余额度不足' : '可用库存不足') : '暂停销售' ?></div>
                         <?php endif; ?>
                     </div>
-                    <?php form('cart'); echo field('product', $line['product_id']), field('revision', $line['revision']); ?>
-                    <label class="inline"><input type="checkbox" name="selected" value="1"<?= $line['selected'] ? ' checked' : '' ?>>参加结算</label>
+                    <?php form('cart'); echo field('product', $line['product_id']); ?>
+                    <?php if ($role === 'buyer'): ?>
+                        <?= field('revision', $line['revision']) ?>
+                        <label class="inline"><input type="checkbox" name="selected" value="1"<?= $line['selected'] ? ' checked' : '' ?>>参加结算</label>
+                    <?php endif; ?>
                     <div class="inline">
                         <input type="number" min="0" max="99" name="quantity" value="<?= e($line['quantity']) ?>" aria-label="购买数量，填 0 移除" required>
                         <button class="secondary">更新</button>
@@ -30,6 +33,10 @@
         </section>
         <section class="panel">
             <h2>结算</h2>
+            <?php if ($role === 'guest'): ?>
+                <p>登录后，购物车会合并到买家账号。账号中已有的商品保留原数量和勾选状态。</p>
+                <a class="button" href="/?page=account">登录或注册买家账号</a>
+            <?php else: ?>
             <?php
             $savedQuote = $_SESSION['quote'] ?? null;
             if (($savedQuote['channel'] ?? null) === 'store' && !isset($savedQuote['pickup_locations'])) {
@@ -37,7 +44,7 @@
             }
             $selected = array_filter($cartLines, static fn(array $line): bool => (bool) $line['selected']);
             $revisions = array_column($selected, 'revision', 'product_id');
-            $quote = ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
+            $quote = empty($savedQuote['requires_refresh']) && ($savedQuote['cart_revisions'] ?? null) === $revisions ? $savedQuote : null;
             $coupons = array_filter($app->buyerCoupons((int) $user['id']), static fn(array $coupon): bool => $coupon['status'] === 'available');
             $loyaltyPolicy = $app->loyaltyPolicy();
             $pickupOptions = [];
@@ -80,6 +87,45 @@
             <?php endif; ?>
             <button class="secondary">计算费用</button></form>
             <?php if ($quote): ?>
+                <?php if (isset($quote['previous'])): ?>
+                    <?php
+                    $previous = $quote['previous'];
+                    $formatAllocation = static function (array $allocation): string {
+                        ksort($allocation, SORT_NUMERIC);
+                        $labels = [];
+                        foreach ($allocation as $warehouse => $units) {
+                            $labels[] = "仓 #$warehouse × $units";
+                        }
+                        return implode(' / ', $labels);
+                    };
+                    ?>
+                    <table>
+                        <caption>报价变更</caption>
+                        <thead><tr><th scope="col">项目</th><th scope="col">原报价</th><th scope="col">新报价</th></tr></thead>
+                        <tbody>
+                            <?php foreach (['subtotal' => '商品小计', 'discount' => '优惠', 'shipping' => '运费', 'total' => '应付金额'] as $key => $label): ?>
+                                <?php if ($key === 'total' || $previous[$key] !== $quote[$key]): ?>
+                                    <tr><th scope="row"><?= e($label) ?></th><td><?= cash($previous[$key]) ?></td><td><?= cash($quote[$key]) ?></td></tr>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                            <?php $oldPoints = $previous['loyalty']['spent'] ?? 0; $newPoints = $quote['loyalty']['spent'] ?? 0; ?>
+                            <?php if ($oldPoints !== $newPoints): ?>
+                                <tr><th scope="row">抵扣积分</th><td><?= e($oldPoints) ?></td><td><?= e($newPoints) ?></td></tr>
+                            <?php endif; ?>
+                            <?php foreach ($quote['items'] as $product => $item): ?>
+                                <?php $oldItem = $previous['items'][$product]; ?>
+                                <?php if ($oldItem['unit_price'] !== $item['unit_price']): ?>
+                                    <tr><th scope="row"><?= e($item['name']) ?>单价</th><td><?= cash($oldItem['unit_price']) ?></td><td><?= cash($item['unit_price']) ?></td></tr>
+                                <?php endif; ?>
+                                <?php if ($oldItem['allocation'] != $item['allocation']): ?>
+                                    <tr><th scope="row"><?= e($item['name']) ?>分仓数量</th>
+                                        <td><?= e($formatAllocation($oldItem['allocation'])) ?></td>
+                                        <td><?= e($formatAllocation($item['allocation'])) ?></td></tr>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
                 <dl class="totals">
                     <dt>商品标价小计</dt><dd><?= cash($quote['subtotal'] + ($quote['member_savings'] ?? 0)) ?></dd>
                     <?php if ($quote['member_savings'] ?? 0): ?><dt>会员价优惠</dt><dd><?= cash(-$quote['member_savings']) ?></dd><?php endif; ?>
@@ -106,7 +152,8 @@
                     <?php endif; ?>
                 <?php endforeach; ?>
                 <?php form('place'); echo field('token', $quote['token']); ?>
-                <button>确认订单</button></form>
+                <button><?= isset($quote['previous']) ? '确认新报价并下单' : '确认订单' ?></button></form>
+            <?php endif; ?>
             <?php endif; ?>
         </section>
     </div>
